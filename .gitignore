@@ -1,5 +1,8 @@
 /target/
 __pycache__/
 
+# oh-my-claudecode operational state.
+/.omc/
+
 # IDE local state can contain personal paths.
 /.idea/workspace.xml
