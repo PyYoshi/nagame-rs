@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Assemble the AppDir in Ubuntu; collect the sources of bundled native packages."""
+# SPDX-License-Identifier: GPL-3.0-or-later
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+
+def run(*args, **kwargs):
+    return subprocess.run(args, check=True, text=True, **kwargs)
+
+
+def capture(*args):
+    return run(*args, stdout=subprocess.PIPE).stdout.strip()
+
+
+def main():
+    source, work = Path('/source'), Path('/work')
+    app = work / 'Nagame.AppDir'
+    app.mkdir()
+    (app / 'usr/bin').mkdir(parents=True)
+    shutil.copy2('/binary/nagame', app / 'usr/bin/nagame')
+    shutil.copy2(source / 'assets/branding/icon-256.png', work / 'nagame.png')
+    tools = work / 'tools'
+    tools.mkdir()
+    for name in ('linuxdeploy', 'appimagetool'):
+        directory = tools / name
+        directory.mkdir()
+        run('/tools/' + name, '--appimage-extract', cwd=directory, stdout=subprocess.DEVNULL)
+    deploy = tools / 'linuxdeploy/squashfs-root/AppRun'
+    libraries = [
+        'libfontconfig.so.1', 'libfreetype.so.6',
+        'libX11.so.6', 'libX11-xcb.so.1',
+    ]
+    ldconfig = capture('ldconfig', '-p')
+    paths = {}
+    for line in ldconfig.splitlines():
+        if ' => ' in line:
+            paths[line.split()[0]] = Path(line.split(' => ')[1])
+    plugins = Path('/usr/lib/x86_64-linux-gnu/libheif/plugins')
+    selected_plugins = [plugins / ('libheif-' + name + '.so') for name in ('aomdec', 'libde265')]
+    command = [str(deploy), '--appdir', str(app), '--executable', str(app / 'usr/bin/nagame'),
+               # The host Vulkan ICD may require newer Wayland symbols. Keep its
+               # Wayland client libraries together with the host graphics stack.
+               '--exclude-library', 'libwayland-*.so*',
+               '--desktop-file', str(source / 'packaging/linux/nagame.desktop'),
+               '--icon-file', str(work / 'nagame.png'),
+               '--custom-apprun', str(source / 'packaging/linux/AppRun')]
+    for path in [paths[name] for name in libraries] + selected_plugins:
+        command += ['--library', str(path)]
+    run(*command)
+    # libheif searches only this private directory, excluding host/encoder plugins.
+    (app / 'usr/lib/libheif').mkdir()
+    for plugin in selected_plugins:
+        shutil.move(app / 'usr/lib' / plugin.name, app / 'usr/lib/libheif' / plugin.name)
+    run('desktop-file-validate', str(app / 'nagame.desktop'))
+
+    licenses = app / 'usr/share/doc/nagame'
+    licenses.mkdir(parents=True)
+    shutil.copy2(source / 'LICENSE', licenses / 'LICENSE')
+    shutil.copytree(work / 'licenses', licenses / 'third-party')
+    native = licenses / 'third-party/native'
+    native.mkdir()
+    shutil.copytree('/usr/share/common-licenses', native / 'common-licenses')
+    packages, files = {}, {}
+    for library in (app / 'usr/lib').rglob('*'):
+        if not library.is_file() or library.is_symlink():
+            continue
+        # Find the original package before linuxdeploy's strip/RPATH changes.
+        candidates = list(Path('/usr/lib/x86_64-linux-gnu').glob(library.name))
+        candidates += list(plugins.glob(library.name))
+        if not candidates:
+            raise RuntimeError(f'No original library for {library.name}')
+        original = candidates[0].resolve()
+        owner = None
+        for path in [str(original), str(original).replace('/usr/lib/', '/lib/', 1)]:
+            result = subprocess.run(['dpkg-query', '-S', path], text=True, capture_output=True)
+            if result.returncode == 0:
+                owner = result.stdout.split(': ')[0]
+                break
+        if not owner:
+            raise RuntimeError(f'No package owns {original}')
+        record = capture('dpkg-query', '-W', '-f=${Package}\t${Version}\t${source:Package}\t${source:Version}', owner).split('\t')
+        name, version, src, src_version = record
+        packages[name] = dict(version=version, source=src, source_version=src_version)
+        files[str(library.relative_to(app))] = name
+        copyright_file = Path('/usr/share/doc') / name / 'copyright'
+        shutil.copy2(copyright_file, native / (name + '.copyright'))
+    manifest = dict(packages=packages, files=files)
+    (native / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+
+    # Confirm no unresolved ELF dependencies under the private library path.
+    env = dict(os.environ, LD_LIBRARY_PATH=str(app / 'usr/lib'))
+    for binary in [app / 'usr/bin/nagame'] + list((app / 'usr/lib').rglob('*.so*')):
+        result = run('ldd', str(binary), env=env, stdout=subprocess.PIPE).stdout
+        if 'not found' in result:
+            raise RuntimeError(result)
+    run(str(app / 'AppRun'), '--help')
+    native_sources = work / 'source/native'
+    native_sources.mkdir()
+    run('apt-get', 'update')
+    for src, version in sorted({(p['source'], p['source_version']) for p in packages.values()}):
+        run('apt-get', 'source', '--download-only', '--only-source', src + '=' + version, cwd=native_sources)
+    shutil.copy2(native / 'manifest.json', native_sources / 'manifest.json')
+
+    version = sys.argv[1]
+    output = work / f'Nagame-{version}-x86_64.AppImage'
+    run(str(tools / 'appimagetool/squashfs-root/AppRun'), '--runtime-file', '/tools/appimage-runtime',
+        '--no-appstream', str(app), str(output), env=dict(os.environ, ARCH='x86_64', VERSION=version))
+    (work / 'native-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    print('Created', output.name, hashlib.sha256(output.read_bytes()).hexdigest())
+
+
+if __name__ == '__main__':
+    main()

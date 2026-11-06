@@ -1,6 +1,21 @@
 {
   "checksums": [
     {
+      "id": "github_release/github.com/AppImage/appimagetool/1.9.1/appimagetool-x86_64.AppImage",
+      "checksum": "ED4CE84F0D9CAFF66F50BCCA6FF6F35AAE54CE8135408B3FA33ABFC3CB384EB0",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/AppImage/type2-runtime/20251108/runtime-x86_64",
+      "checksum": "2FCA8B443C92510F1483A883F60061AD09B46B978B2631C807CD873A47EC260D",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/EmbarkStudios/cargo-about/0.9.3/cargo-about-0.9.3-x86_64-unknown-linux-musl.tar.gz",
+      "checksum": "3AD1E94EA1E63D69D1961F4FB15CCBBE9575D906111F96D2CB4DCE6DF48F71B4",
+      "algorithm": "sha256"
+    },
+    {
       "id": "github_release/github.com/betterleaks/betterleaks/v1.10.0/betterleaks_1.10.0_darwin_arm64.tar.gz",
       "checksum": "91EAEA97709D3308C7712574A56260539C65FBD0672711537AA68D566EA630B3",
       "algorithm": "sha256"
@@ -53,6 +68,26 @@
     {
       "id": "github_release/github.com/casey/just/1.59.0/just-1.59.0-x86_64-unknown-linux-musl.tar.gz",
       "checksum": "409044617B6F06517C1035E55CA38C8C856FF8B650E41BC2AA1EF82D5903A23E",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/cross-rs/cross/v0.2.5/cross-x86_64-apple-darwin.tar.gz",
+      "checksum": "84A664EDBD5405EFC985E9423804CC63D12E55691B9C7E9729355FDF7B9AF015",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/cross-rs/cross/v0.2.5/cross-x86_64-pc-windows-msvc.tar.gz",
+      "checksum": "3D4D6DBEBF448B1F6856C662B2B342DB0A7F6827E91ED88E2BF0E5CA00A30A81",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/cross-rs/cross/v0.2.5/cross-x86_64-unknown-linux-musl.tar.gz",
+      "checksum": "A486CEFA6CB486971B97BE321EA9DFC2E90C1979550295314A368F53FAB6D588",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/linuxdeploy/linuxdeploy/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage",
+      "checksum": "C20CD71E3A4E3B80C3483CEF793CDA3F4E990ACA14014D23C544CA3CE1270B4D",
       "algorithm": "sha256"
     },
     {

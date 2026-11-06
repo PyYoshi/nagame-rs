@@ -96,9 +96,15 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 
 翻訳リソースとライブラリの比較・選定理由は [多言語対応](docs/localization.md) を参照してください。
 
-`aqua install` で開発ツールを導入すると、`just release` でリリースビルド、`just secrets` でbetterleaksの検査、`just check` で基本チェック一式を実行できます。`just` だけでコマンド一覧を表示します。
+[開発ツールの導入手順](docs/development.md#開発ツールと秘密情報の検査) に従ってaquaのポリシーを確認・信頼登録し、`aqua install` でツールを導入します。`just release` でリリースビルド、`just secrets` でbetterleaksの検査、`just check` で基本チェック一式を実行できます。`just` だけでコマンド一覧を表示します。
 
-[コード構成と設計](docs/architecture.md) にモジュールの責務、非同期処理、画素表現とGPU画像の寿命をまとめています。[開発・検証](docs/development.md) に変更箇所の案内、チェック手順、実ウィンドウテスト、性能調査のコマンドを記載しています。
+[コード構成と設計](docs/architecture.md) にモジュールの責務、非同期処理、画素表現とGPU画像の寿命をまとめています。[開発・検証](docs/development.md) に変更箇所の案内、チェック手順、実ウィンドウテスト、性能調査のコマンドを記載しています。crossとPodmanを使う配布用の環境は [配布用ビルド](docs/distribution.md) を参照してください。
+
+## ライセンス
+
+Copyright (C) 2026 Yoshihiro Misawa
+
+Nagameの独自コードと素材は **GPL-3.0-or-later** で提供します。GNU General Public License version 3、または利用者の選択によりそれ以降の版に従って、再配布・改変できます。無保証です。全文は [LICENSE](LICENSE) を参照してください。第三者のライブラリ・同梱コードはそれぞれのライセンスに従います。
 
 ## 現時点の範囲
 

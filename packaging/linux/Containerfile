@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Ubuntu 24.04 amd64, glibc 2.39. Update the digest deliberately.
+FROM docker.io/library/ubuntu:24.04@sha256:78d4744ead1f5b19b04d0df558ab182a5300903900755e515b2ca4d10eb2044d
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates pkg-config python3 patchelf desktop-file-utils dpkg-dev file \
+        libfontconfig1-dev libfreetype-dev libheif-dev \
+        libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev \
+        libxkbcommon-dev libxkbcommon-x11-dev libvulkan-dev \
+        libheif-plugin-aomdec libheif-plugin-aomenc libheif-plugin-libde265 libheif-plugin-x265 \
+    && sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources \
+    && rm -rf /var/lib/apt/lists/*
+
+# cross mounts the rustup toolchain selected by `cross +VERSION`.

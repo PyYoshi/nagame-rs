@@ -1,0 +1,35 @@
+# AppImage tools are not in the pinned standard registry.
+packages:
+- type: github_release
+  repo_owner: linuxdeploy
+  repo_name: linuxdeploy
+  asset: linuxdeploy-x86_64.AppImage
+  format: raw
+  supported_envs: [linux/amd64]
+  files:
+  - name: linuxdeploy
+- type: github_release
+  repo_owner: AppImage
+  repo_name: appimagetool
+  asset: appimagetool-x86_64.AppImage
+  format: raw
+  supported_envs: [linux/amd64]
+  files:
+  - name: appimagetool
+- type: github_release
+  repo_owner: AppImage
+  repo_name: type2-runtime
+  asset: runtime-x86_64
+  format: raw
+  supported_envs: [linux/amd64]
+  files:
+  - name: appimage-runtime
+- type: github_release
+  repo_owner: EmbarkStudios
+  repo_name: cargo-about
+  asset: cargo-about-{{.Version}}-x86_64-unknown-linux-musl.tar.gz
+  format: tar.gz
+  supported_envs: [linux/amd64]
+  files:
+  - name: cargo-about
+    src: cargo-about-{{.Version}}-x86_64-unknown-linux-musl/cargo-about

@@ -5,6 +5,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A fast single-window image viewer built with Rust and GPUI"
+license = "GPL-3.0-or-later"
 
 [features]
 ui-smoke = []

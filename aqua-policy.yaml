@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/aquaproj/aqua/main/json-schema/policy.json
+registries:
+- type: standard
+- name: packaging
+  type: local
+  path: packaging/linux/aqua-registry.yaml
+packages:
+- registry: standard
+- name: linuxdeploy/linuxdeploy
+  registry: packaging
+- name: AppImage/appimagetool
+  registry: packaging
+- name: AppImage/type2-runtime
+  registry: packaging
+- name: EmbarkStudios/cargo-about
+  registry: packaging

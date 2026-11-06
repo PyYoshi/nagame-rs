@@ -317,6 +317,11 @@ mod modern_format_tests {
                 "expected red BGRA, got {color:?}"
             );
             assert!(color[3].abs_diff(96) <= 4, "alpha={}", color[3]);
+            if let Some(directory) = std::env::var_os("NAGAME_CODEC_FIXTURE_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).unwrap();
+                std::fs::copy(&path, directory.join(format!("red-{bits}.{extension}"))).unwrap();
+            }
             std::fs::remove_file(path).unwrap();
         }
     }

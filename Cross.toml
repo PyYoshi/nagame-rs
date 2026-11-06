@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[target.x86_64-unknown-linux-gnu]
+dockerfile = { file = "packaging/linux/Containerfile", context = "packaging/linux" }
+
+[target.x86_64-unknown-linux-gnu.env]
+passthrough = ["NAGAME_CODEC_FIXTURE_DIR"]

@@ -8,7 +8,19 @@ checksum:
 registries:
 - type: standard
   ref: v4.582.0 # renovate: depName=aquaproj/aqua-registry
+- name: packaging
+  type: local
+  path: packaging/linux/aqua-registry.yaml
 packages:
 - name: betterleaks/betterleaks@v1.10.0
 - name: casey/just@1.59.0
 - name: oxipng/oxipng@v10.2.1
+- name: cross-rs/cross@v0.2.5
+- name: linuxdeploy/linuxdeploy@1-alpha-20251107-1
+  registry: packaging
+- name: AppImage/appimagetool@1.9.1
+  registry: packaging
+- name: AppImage/type2-runtime@20251108
+  registry: packaging
+- name: EmbarkStudios/cargo-about@0.9.3
+  registry: packaging

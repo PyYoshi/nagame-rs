@@ -17,9 +17,12 @@ cargo run --locked --release -- /path/to/images
 
 開発用CLIは [aqua](https://aquaproj.github.io/) で管理する。aquaが未導入の場合は [公式の導入手順](https://aquaproj.github.io/docs/install) に従い、`aqua` をPATHから実行できるようにする。この環境ではaqua 2.65.2で確認した。
 
-[aqua.yaml](../aqua.yaml) でレジストリ・just・betterleaks・oxipngのバージョンを固定し、[aqua-checksums.json](../aqua-checksums.json) に配布物のチェックサムを記録している。現在のjustは1.59.0、betterleaksはv1.10.0、oxipngはv10.2.1。インストール時はチェックサム照合を必須とする。
+[aqua.yaml](../aqua.yaml) でレジストリと開発・配布ツールのバージョンを固定し、[aqua-checksums.json](../aqua-checksums.json) に配布物のチェックサムを記録している。現在のjustは1.59.0、betterleaksはv1.10.0、oxipngはv10.2.1、crossはv0.2.5。AppImage用ツールの版は [配布用ビルド](distribution.md) を参照。インストール時はチェックサム照合を必須とする。
+
+AppImage用の4ツールは標準レジストリにないため、[ローカルレジストリ](../packaging/linux/aqua-registry.yaml) を使う。初回は [aqua-policy.yaml](../aqua-policy.yaml) の許可対象を確認し、信頼登録してからインストールする。ポリシーを変更した場合は再確認・再登録する。全ポリシーの無効化は行わない。
 
 ```sh
+aqua policy allow aqua-policy.yaml
 aqua install
 just secrets
 ```
@@ -31,6 +34,11 @@ just secrets
 | `just setup` | aquaの開発ツールをインストール |
 | `just build` | 開発用ビルド |
 | `just release` | 通常アプリのリリースビルド。出力は `target/release/nagame` |
+| `just dist-build` / `just dist-test` | crossとPodmanによる配布用ビルド／単体テスト。[環境と出力先](distribution.md) |
+| `just dist-appimage` | AppImage、ソースアーカイブ、ライセンス一覧、ビルド記録、SHA256を生成 |
+| `just dist-check-appimage` | AppImage生成後、システムlibheifのないUbuntuでPNG・8/10bit AVIF/HEICのGUI読み込みを検証 |
+| `just dist-check-appimage-host` | 生成済みAppImageを現在のデスクトップのWayland/X11とGPUドライバーで検証。画像読み込み後にテスト用ウィンドウを閉じる |
+| `just install-desktop BINARY` | 指定したAppImage／通常バイナリの起動項目とNagameアイコンをユーザー領域に登録 |
 | `just fmt` / `just fmt-check` | Rustコードの整形／整形検査 |
 | `just test` | 単体テスト |
 | `just clippy` | 全ターゲット・全featureのClippy検査 |
