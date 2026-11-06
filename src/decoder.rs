@@ -1,6 +1,7 @@
 //! ファイルを復号し、向きと回転を反映したBGRAフレームへ変換する。
 //! GIFは先頭フレームの先行通知とフレーム間の中止に対応する。
 
+use crate::i18n::tr;
 use image::{AnimationDecoder, Frame, ImageDecoder, ImageFormat, ImageReader, Limits};
 use std::{fs::File, io::BufReader, path::Path};
 
@@ -61,7 +62,7 @@ pub fn decode_progressive(
             let frame = frame.map_err(|e| e.to_string())?;
             bytes += frame.buffer().len() as u64;
             if bytes > BUDGET || frames.len() >= 1000 {
-                return Err("GIFの展開サイズが上限（128 MiB / 1000フレーム）を超えています".into());
+                return Err(tr!("gif-limit"));
             }
             if frames.is_empty() {
                 preview(convert(frame.clone(), turns));
@@ -74,7 +75,7 @@ pub fn decode_progressive(
         let orientation = decoder.orientation().map_err(|e| e.to_string())?;
         let (width, height) = decoder.dimensions();
         if u64::from(width) * u64::from(height) * 4 > BUDGET {
-            return Err("画像の展開サイズが128 MiBを超えています".into());
+            return Err(tr!("image-limit"));
         }
         let mut image = image::DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
         image.apply_orientation(orientation);
@@ -100,7 +101,7 @@ fn convert(frame: Frame, turns: u8) -> Frame {
 
 fn finish(frames: Vec<Frame>, turns: u8) -> Result<Decoded, String> {
     let converted: Vec<_> = frames.into_iter().map(|f| convert(f, turns)).collect();
-    let first = converted.first().ok_or("画像にフレームがありません")?;
+    let first = converted.first().ok_or(tr!("no-frames"))?;
     let dimensions = [
         first.buffer().width() as f32,
         first.buffer().height() as f32,
@@ -149,7 +150,7 @@ fn decode_heif(path: &Path) -> Result<image::RgbaImage, String> {
     let handle = context.primary_image_handle().map_err(|e| e.to_string())?;
     let (w, h) = (handle.width(), handle.height());
     if w > 16384 || h > 16384 || u64::from(w) * u64::from(h) * 4 > BUDGET {
-        return Err("HEIF画像の展開サイズが上限を超えています".into());
+        return Err(tr!("heif-limit"));
     }
     // libheif applies container irot/imir transforms and converts high bit depth
     // to the 8-bit RGBA output requested here. HDR tone mapping is separate.
@@ -159,10 +160,10 @@ fn decode_heif(path: &Path) -> Result<image::RgbaImage, String> {
     let plane = image
         .planes()
         .interleaved
-        .ok_or("RGBAプレーンがありません")?;
+        .ok_or(tr!("rgba-plane-missing"))?;
     let (w, h) = (image.width(), image.height());
     if w > 16384 || h > 16384 || u64::from(w) * u64::from(h) * 4 > BUDGET {
-        return Err("画像が大きすぎます".into());
+        return Err(tr!("image-too-large"));
     }
     let mut pixels = image::RgbaImage::new(w, h);
     for (destination, source) in pixels

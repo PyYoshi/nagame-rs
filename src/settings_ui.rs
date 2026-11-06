@@ -2,6 +2,7 @@
 //! セレクターの強調候補と、決定済みの下書き値は分けて保持する。
 
 use crate::bindings::Shortcut;
+use crate::i18n::{self, tr};
 use crate::{
     Command, Viewer,
     settings::{BoundaryAction, Settings, SortOrder},
@@ -17,6 +18,7 @@ pub enum Tab {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Field {
+    Language,
     Boundary,
     PreviousFirst,
     ParentFirst,
@@ -40,6 +42,7 @@ pub enum Field {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Choice {
+    Language(i18n::Language),
     Boundary(BoundaryAction),
     Sort(SortOrder),
     Color(u32),
@@ -48,15 +51,16 @@ enum Choice {
 impl Choice {
     fn label(self) -> String {
         match self {
-            Self::Boundary(v) => v.label().into(),
-            Self::Sort(v) => v.label().into(),
-            Self::Algorithm(v) => v.label().into(),
+            Self::Language(language) => language.label(),
+            Self::Boundary(v) => v.label(),
+            Self::Sort(v) => v.label(),
+            Self::Algorithm(v) => v.label(),
             Self::Color(v) => match v {
-                0x181a1f => "ダーク（#181A1F）".into(),
-                0 => "黒（#000000）".into(),
-                0x404040 => "グレー（#404040）".into(),
-                0xffffff => "白（#FFFFFF）".into(),
-                _ => format!("現在の色（#{v:06X}）"),
+                0x181a1f => tr!("color-dark"),
+                0 => tr!("color-black"),
+                0x404040 => tr!("color-gray"),
+                0xffffff => tr!("color-white"),
+                _ => i18n::current_color(v),
             },
         }
     }
@@ -68,12 +72,12 @@ pub(super) struct Selector {
     position: Point<Pixels>,
 }
 impl Tab {
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            Self::Navigation => "移動・並び順",
-            Self::Display => "表示・漫画",
-            Self::Slideshow => "読み込み・スライド",
-            Self::Keyboard => "キー設定",
+            Self::Navigation => tr!("tab-navigation"),
+            Self::Display => tr!("tab-display"),
+            Self::Slideshow => tr!("tab-slideshow"),
+            Self::Keyboard => tr!("tab-keyboard"),
         }
     }
     pub fn fields(self) -> &'static [Field] {
@@ -99,6 +103,7 @@ impl Tab {
                 ReverseControls,
                 ShrinkAlgorithm,
                 EnlargeAlgorithm,
+                Language,
             ],
             Self::Slideshow => &[Interval, Prefetch, Wheel],
             Self::Keyboard => &[],
@@ -106,33 +111,42 @@ impl Tab {
     }
 }
 impl Field {
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         use Field::*;
         match self {
-            Boundary => "最初・最後の画像に到達した時",
-            PreviousFirst => "前のフォルダは先頭画像を開く",
-            ParentFirst => "親フォルダは先頭画像を開く",
-            Sort => "ファイルの並び順",
-            Reverse => "逆順に並べる",
-            Natural => "名前の数字は数値順に並べる",
-            Skip => "スキップする画像の枚数",
-            Fit => "画像を開いた時にフィットする",
-            Upscale => "フィット時に小さな画像も拡大する",
-            LockZoom => "画像を送っても倍率を維持する",
-            Background => "背景色",
-            Manga => "漫画モード（見開き表示）",
-            Rtl => "漫画を右から左に読む",
-            Landscape => "横長の画像は単独で表示する",
-            ReverseControls => "右から左の漫画は左右の操作を逆にする",
-            Interval => "スライドショーの表示秒数",
-            Prefetch => "前後の画像を先読みする",
-            Wheel => "ホイールでズーム（Ctrlで画像送り）",
-            ShrinkAlgorithm => "縮小表示の補間方法",
-            EnlargeAlgorithm => "拡大表示の補間方法",
+            Language => tr!("field-language"),
+            Boundary => tr!("field-boundary"),
+            PreviousFirst => tr!("field-previous-first"),
+            ParentFirst => tr!("field-parent-first"),
+            Sort => tr!("field-sort"),
+            Reverse => tr!("field-reverse"),
+            Natural => tr!("field-natural"),
+            Skip => tr!("field-skip"),
+            Fit => tr!("field-fit"),
+            Upscale => tr!("field-upscale"),
+            LockZoom => tr!("field-lock-zoom"),
+            Background => tr!("field-background"),
+            Manga => tr!("field-manga"),
+            Rtl => tr!("field-rtl"),
+            Landscape => tr!("field-landscape"),
+            ReverseControls => tr!("field-reverse-controls"),
+            Interval => tr!("field-interval"),
+            Prefetch => tr!("field-prefetch"),
+            Wheel => tr!("field-wheel"),
+            ShrinkAlgorithm => tr!("field-shrink"),
+            EnlargeAlgorithm => tr!("field-enlarge"),
         }
     }
     fn choices(self, s: &Settings) -> Vec<Choice> {
         match self {
+            Self::Language => [
+                i18n::Language::System,
+                i18n::Language::Japanese,
+                i18n::Language::English,
+            ]
+            .into_iter()
+            .map(Choice::Language)
+            .collect(),
             Self::Boundary => [
                 BoundaryAction::Ask,
                 BoundaryAction::Wrap,
@@ -159,6 +173,7 @@ impl Field {
     }
     fn selected_choice(self, s: &Settings) -> Option<Choice> {
         match self {
+            Self::Language => Some(Choice::Language(s.language)),
             Self::Boundary => Some(Choice::Boundary(s.boundary)),
             Self::Sort => Some(Choice::Sort(s.sort)),
             Self::Background => Some(Choice::Color(s.background)),
@@ -169,6 +184,7 @@ impl Field {
     }
     fn choose(self, s: &mut Settings, choice: Choice) {
         match (self, choice) {
+            (Self::Language, Choice::Language(language)) => s.language = language,
             (Self::Boundary, Choice::Boundary(v)) => s.boundary = v,
             (Self::Sort, Choice::Sort(v)) => s.sort = v,
             (Self::Background, Choice::Color(v)) => s.background = v,
@@ -183,10 +199,11 @@ impl Field {
     fn value(self, s: &Settings) -> String {
         use Field::*;
         let boolean = match self {
-            Boundary => return s.boundary.label().into(),
-            ShrinkAlgorithm => return s.shrink_algorithm.label().into(),
-            EnlargeAlgorithm => return s.enlarge_algorithm.label().into(),
-            Sort => return s.sort.label().into(),
+            Language => return s.language.label(),
+            Boundary => return s.boundary.label(),
+            ShrinkAlgorithm => return s.shrink_algorithm.label(),
+            EnlargeAlgorithm => return s.enlarge_algorithm.label(),
+            Sort => return s.sort.label(),
             Skip => return s.skip_count.to_string(),
             Interval => return s.slideshow_seconds.to_string(),
             Background => return format!("#{:06X}", s.background),
@@ -204,11 +221,40 @@ impl Field {
             Prefetch => s.prefetch,
             Wheel => s.wheel_zoom,
         };
-        if boolean { "有効" } else { "無効" }.into()
+        if boolean {
+            tr!("enabled")
+        } else {
+            tr!("disabled")
+        }
     }
     pub fn adjust(self, s: &mut Settings, direction: i32) {
         use Field::*;
         match self {
+            Language => {
+                s.language = match s.language {
+                    i18n::Language::System => {
+                        if direction < 0 {
+                            i18n::Language::English
+                        } else {
+                            i18n::Language::Japanese
+                        }
+                    }
+                    i18n::Language::Japanese => {
+                        if direction < 0 {
+                            i18n::Language::System
+                        } else {
+                            i18n::Language::English
+                        }
+                    }
+                    i18n::Language::English => {
+                        if direction < 0 {
+                            i18n::Language::Japanese
+                        } else {
+                            i18n::Language::System
+                        }
+                    }
+                }
+            }
             ShrinkAlgorithm => s.shrink_algorithm = s.shrink_algorithm.next(direction),
             EnlargeAlgorithm => s.enlarge_algorithm = s.enlarge_algorithm.next(direction),
             Boundary => {
@@ -582,7 +628,7 @@ impl Viewer {
                     button("value", value, 1).into_any_element()
                 };
                 div()
-                    .id(field.label())
+                    .id(field as usize)
                     .flex()
                     .items_center()
                     .justify_between()
@@ -596,7 +642,7 @@ impl Viewer {
                     } else {
                         0x252a33
                     }))
-                    .child(field.label())
+                    .child(div().flex_1().min_w_0().child(field.label()))
                     .child(control)
             })
             .collect::<Vec<_>>();
@@ -615,7 +661,7 @@ impl Viewer {
                         .join(" / ");
                     let selected = self.settings_selected == index;
                     div()
-                        .id(action.label())
+                        .id(action as usize)
                         .flex()
                         .items_center()
                         .justify_between()
@@ -623,7 +669,7 @@ impl Viewer {
                         .px_3()
                         .py_2()
                         .bg(rgb(if selected { 0x2e3748 } else { 0x252a33 }))
-                        .child(action.label())
+                        .child(div().flex_1().min_w_0().child(action.label()))
                         .child(
                             div()
                                 .id("binding")
@@ -632,9 +678,9 @@ impl Viewer {
                                 .cursor_pointer()
                                 .bg(rgb(0x373d49))
                                 .child(if self.capture_binding == Some(action) {
-                                    "キーを押してください…".to_owned()
+                                    tr!("press-key")
                                 } else if keys.is_empty() {
-                                    "未割り当て".to_owned()
+                                    tr!("unassigned")
                                 } else {
                                     keys
                                 })
@@ -653,24 +699,130 @@ impl Viewer {
                 .collect::<Vec<_>>()
         };
 
-        div().id("settings-overlay").absolute().inset_0().bg(rgba(0x00000099)).flex().items_center().justify_center().occlude()
-            .on_scroll_wheel(cx.listener(|this,_,_,cx|{if this.settings_selector.take().is_some(){cx.notify();}cx.stop_propagation();}))
-            .child(div().id("settings-dialog").w(px(760.)).max_w(relative(0.96)).h(px(660.)).max_h(relative(0.94)).flex().flex_col().overflow_hidden().p_5().rounded_lg().bg(rgb(0x252a33)).border_1().border_color(rgb(0x606a79)).text_color(rgb(0xe3e6ec)).text_sm()
-                .child(div().flex_none().text_xl().mb_3().child("設定"))
-                .child(div().flex_none().flex().gap_2().mb_4().children([Tab::Navigation,Tab::Display,Tab::Slideshow,Tab::Keyboard].into_iter().map(|tab|
-                    div().id(tab.label()).px_3().py_2().rounded_sm().cursor_pointer().bg(rgb(if tab==self.settings_tab {0x465574}else{0x343b48})).child(tab.label())
-                        .on_click(cx.listener(move |this,_,_,cx| {this.settings_selector=None;this.settings_tab=tab;this.settings_selected=0;this.capture_binding=None;this.settings_scroll.scroll_to_item(0);cx.notify();})))))
-                .when(self.settings_tab==Tab::Keyboard,|panel|panel.child(div().text_xs().mb_3().child("変更する項目を選んでSpace、続いて割り当てるキーを押してください。既存の割り当ては置き換わります。Escでキー入力を中止できます。")))
-                .child(div().flex_none().mb_2().text_xs().text_color(rgb(0xb8c4d7)).child(format!("このタブには {} 項目あります。右のバー・ホイール・↑↓でスクロールできます。", rows.len())))
-                .child(div().flex().flex_1().min_h_0().gap_2()
-                    .child(div().id("settings-rows").flex_1().min_w_0().h_full().overflow_y_scroll().track_scroll(&self.settings_scroll).children(rows))
-                    .child(self.settings_scrollbar(cx)))
-                .when_some(self.settings_error.clone(),|panel,error|panel.child(div().mt_3().text_color(rgb(0xffa0a0)).child(error)))
-                .child(div().flex_none().mt_4().text_xs().text_color(rgb(0xa9b3c2)).child("1〜4: タブ / ↑↓: 項目 / Space: 選択・変更 / 選択中のEnter: 決定、Esc: 中止 / Enter: 保存"))
-                .child(div().flex_none().flex().justify_between().mt_4()
-                    .child(self.button("初期値に戻す",Command::ResetSettings,cx))
-                    .child(div().flex().gap_3().child(self.button("キャンセル",Command::CancelSettings,cx)).child(self.button("保存して適用",Command::SaveSettings,cx)))))
-            .when(self.settings_selector.is_some(),|overlay|overlay.child(self.selector_panel(cx)))
+        div()
+            .id("settings-overlay")
+            .absolute()
+            .inset_0()
+            .bg(rgba(0x00000099))
+            .flex()
+            .items_center()
+            .justify_center()
+            .occlude()
+            .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+                if this.settings_selector.take().is_some() {
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }))
+            .child(
+                div()
+                    .id("settings-dialog")
+                    .w(px(940.))
+                    .max_w(relative(0.96))
+                    .h(px(660.))
+                    .max_h(relative(0.94))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .p_5()
+                    .rounded_lg()
+                    .bg(rgb(0x252a33))
+                    .border_1()
+                    .border_color(rgb(0x606a79))
+                    .text_color(rgb(0xe3e6ec))
+                    .text_sm()
+                    .child(div().flex_none().text_xl().mb_3().child(tr!("settings")))
+                    .child(
+                        div().flex_none().flex().gap_2().mb_4().children(
+                            [Tab::Navigation, Tab::Display, Tab::Slideshow, Tab::Keyboard]
+                                .into_iter()
+                                .map(|tab| {
+                                    div()
+                                        .id(tab as usize)
+                                        .px_3()
+                                        .py_2()
+                                        .rounded_sm()
+                                        .cursor_pointer()
+                                        .bg(rgb(if tab == self.settings_tab {
+                                            0x465574
+                                        } else {
+                                            0x343b48
+                                        }))
+                                        .child(tab.label())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.settings_selector = None;
+                                            this.settings_tab = tab;
+                                            this.settings_selected = 0;
+                                            this.capture_binding = None;
+                                            this.settings_scroll.scroll_to_item(0);
+                                            cx.notify();
+                                        }))
+                                }),
+                        ),
+                    )
+                    .when(self.settings_tab == Tab::Keyboard, |panel| {
+                        panel.child(div().text_xs().mb_3().child(tr!("binding-help")))
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .mb_2()
+                            .text_xs()
+                            .text_color(rgb(0xb8c4d7))
+                            .child(i18n::settings_row_count(rows.len())),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_h_0()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("settings-rows")
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_full()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.settings_scroll)
+                                    .children(rows),
+                            )
+                            .child(self.settings_scrollbar(cx)),
+                    )
+                    .when_some(self.settings_error.clone(), |panel, error| {
+                        panel.child(div().mt_3().text_color(rgb(0xffa0a0)).child(error))
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .mt_4()
+                            .text_xs()
+                            .text_color(rgb(0xa9b3c2))
+                            .child(tr!("settings-help")),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .justify_between()
+                            .mt_4()
+                            .child(self.button(tr!("reset-defaults"), Command::ResetSettings, cx))
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_3()
+                                    .child(self.button(tr!("cancel"), Command::CancelSettings, cx))
+                                    .child(self.button(
+                                        tr!("save-apply"),
+                                        Command::SaveSettings,
+                                        cx,
+                                    )),
+                            ),
+                    ),
+            )
+            .when(self.settings_selector.is_some(), |overlay| {
+                overlay.child(self.selector_panel(cx))
+            })
             .into_any_element()
     }
 }

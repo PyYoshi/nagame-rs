@@ -3,6 +3,7 @@
 
 mod bindings;
 mod decoder;
+mod i18n;
 mod menu_ui;
 mod model;
 mod pipeline;
@@ -15,6 +16,7 @@ mod ui_smoke;
 mod viewer_io;
 
 use gpui::{prelude::*, *};
+use i18n::tr;
 use model::{Album, Viewport};
 use settings::{BoundaryAction, Settings};
 use std::{
@@ -26,7 +28,7 @@ use std::{
 const BAR: f32 = 48.;
 const FOOTER: f32 = 30.;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Command {
     Open,
     Menu(menu_ui::Menu),
@@ -114,6 +116,7 @@ impl Viewer {
                 Ok(settings) => (settings, None),
                 Err(error) => (Settings::default(), Some(error)),
             };
+        i18n::activate(settings.language);
         let focus = cx.focus_handle();
         window.focus(&focus);
         let (requests, responses) = pipeline::worker();
@@ -288,7 +291,7 @@ impl Viewer {
             .is_err()
         {
             self.loading = false;
-            self.error = Some("画像読み込みスレッドが終了しました".into());
+            self.error = Some(tr!("loader-stopped"));
         }
         cx.notify();
     }
@@ -343,7 +346,7 @@ impl Viewer {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("画像を開く".into()),
+            prompt: Some(tr!("open-image").into()),
         });
         cx.spawn(async move |entity, cx| {
             let result = selection.await;
@@ -396,7 +399,7 @@ impl Viewer {
             Command::CopyPath => {
                 if let Some(path) = self.album.current() {
                     cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
-                    self.notice = Some("パスをコピーしました".into());
+                    self.notice = Some(tr!("path-copied"));
                 }
             }
             Command::Reveal => {
@@ -792,6 +795,7 @@ impl Viewer {
         }
         let album = self.album.clone();
         let sorting = settings.clone();
+        i18n::activate(settings.language);
         self.settings = settings;
         self.settings_draft = None;
         self.settings_error = None;
@@ -805,14 +809,16 @@ impl Viewer {
         );
     }
 
-    fn button(
+    fn button<L: Into<SharedString>>(
         &self,
-        label: &'static str,
+        label: L,
         command: Command,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> impl IntoElement + use<L> {
+        let label = label.into();
         div()
-            .id(label)
+            .id(SharedString::from(format!("{command:?}")))
+            .flex_none()
             .px_3()
             .py_1()
             .rounded_sm()
@@ -887,47 +893,38 @@ impl Render for Viewer {
                 .unwrap_or_default()
         ));
         let mut status = if self.loading {
-            "読み込み中…".into()
+            tr!("loading")
         } else if let Some(error) = &self.error {
-            format!("エラー: {error}")
+            i18n::error_status(error)
         } else if let Some(error) = &self.settings_error {
-            format!("設定: {error}")
+            i18n::settings_error_status(error)
         } else if let Some(notice) = &self.notice {
             notice.clone()
         } else if self.image.is_some() {
-            format!(
-                "{} / {}    {} × {}    {:.0}%{}    {}{}",
-                if self.pages > 1 {
-                    format!("{}–{}", self.album.index + 1, self.album.index + self.pages)
-                } else {
-                    (self.album.index + 1).to_string()
-                },
-                self.album.paths.len(),
-                self.dimensions[0],
-                self.dimensions[1],
-                scale * 100.,
-                if self.view.fit {
-                    " · フィット"
-                } else {
-                    ""
-                },
-                filename.unwrap_or_default(),
-                if self.slide {
-                    "    ▶ 自動送り"
-                } else {
-                    ""
-                }
-            )
+            let page_range = if self.pages > 1 {
+                format!("{}–{}", self.album.index + 1, self.album.index + self.pages)
+            } else {
+                (self.album.index + 1).to_string()
+            };
+            i18n::image_status(i18n::ImageStatus {
+                page_range: &page_range,
+                total: self.album.paths.len(),
+                dimensions: self.dimensions,
+                percent: scale * 100.,
+                fit: self.view.fit,
+                filename: &filename.unwrap_or_default(),
+                slideshow: self.slide,
+            })
         } else {
-            "Ctrl+O で画像を開く · ファイルやフォルダをドロップ".into()
+            tr!("status-open-hint")
         };
 
         if self.resampling.fallback {
-            status.push_str("    補間: GPU（サイズ上限）");
+            status.push_str(&tr!("resampling-fallback"));
         } else if let Some(error) = &self.resampling.error {
-            status.push_str(&format!("    補間: {error}"));
+            status.push_str(&i18n::resampling_error(error));
         } else if self.resampling.pending() {
-            status.push_str("    表示補間中…");
+            status.push_str(&tr!("resampling-pending"));
         }
         let content = if let Some(image) = &display_image {
             let w = target[0] as f32 / device_scale;
@@ -954,16 +951,16 @@ impl Render for Viewer {
                 .gap_3()
                 .text_color(rgb(0x9299a5))
                 .child(div().text_3xl().child(if self.loading {
-                    "読み込み中…"
+                    tr!("loading")
                 } else {
                     if self.album.directory.as_os_str().is_empty() {
-                        "Nagame"
+                        "Nagame".to_owned()
                     } else {
-                        "このフォルダに画像はありません"
+                        tr!("empty-folder")
                     }
                 }))
-                .child("画像を開く、またはここにドロップ")
-                .child("← → 画像送り    + − ズーム    F フィット    1 原寸    R 回転")
+                .child(tr!("empty-hint"))
+                .child(tr!("key-hint"))
                 .into_any_element()
         };
 
@@ -989,18 +986,20 @@ impl Render for Viewer {
             .child(self.menu_bar(cx))
             .child(
                 div()
+                    .id("toolbar")
                     .h(px(BAR))
                     .flex_none()
                     .flex()
+                    .overflow_x_scroll()
                     .items_center()
                     .px_2()
                     .gap_1()
                     .bg(rgb(0x25282f))
-                    .child(self.button("開く", Command::Open, cx))
-                    .child(self.button("設定", Command::Settings, cx))
-                    .child(self.button("親", Command::Parent, cx))
-                    .child(self.button("前フォルダ", Command::PreviousFolder, cx))
-                    .child(self.button("次フォルダ", Command::NextFolder, cx))
+                    .child(self.button(tr!("open"), Command::Open, cx))
+                    .child(self.button(tr!("settings"), Command::Settings, cx))
+                    .child(self.button(tr!("parent"), Command::Parent, cx))
+                    .child(self.button(tr!("previous-folder-short"), Command::PreviousFolder, cx))
+                    .child(self.button(tr!("next-folder-short"), Command::NextFolder, cx))
                     .child(self.button(
                         "〈",
                         if self.reversed_manga_controls() {
@@ -1021,12 +1020,16 @@ impl Render for Viewer {
                     ))
                     .child(self.button("−", Command::ZoomOut, cx))
                     .child(self.button("＋", Command::ZoomIn, cx))
-                    .child(self.button("フィット", Command::Fit, cx))
+                    .child(self.button(tr!("fit"), Command::Fit, cx))
                     .child(self.button("100%", Command::Actual, cx))
-                    .child(self.button("右回転", Command::Rotate, cx))
-                    .child(self.button("全画面", Command::Fullscreen, cx))
+                    .child(self.button(tr!("rotate-right"), Command::Rotate, cx))
+                    .child(self.button(tr!("fullscreen"), Command::Fullscreen, cx))
                     .child(self.button(
-                        if self.slide { "停止" } else { "自動送り" },
+                        if self.slide {
+                            tr!("stop")
+                        } else {
+                            tr!("slideshow-short")
+                        },
                         Command::Slide,
                         cx,
                     )),
@@ -1153,9 +1156,9 @@ impl Render for Viewer {
                             .border_1()
                             .border_color(rgb(0x707785))
                             .child(if direction > 0 {
-                                "最後の画像です。次の操作を選択してください"
+                                tr!("last-image-prompt")
                             } else {
-                                "最初の画像です。次の操作を選択してください"
+                                tr!("first-image-prompt")
                             })
                             .child(
                                 div()
@@ -1164,9 +1167,9 @@ impl Render for Viewer {
                                     .mt_3()
                                     .child(self.button(
                                         if direction > 0 {
-                                            "次のフォルダへ"
+                                            tr!("go-next-folder")
                                         } else {
-                                            "前のフォルダへ"
+                                            tr!("go-previous-folder")
                                         },
                                         if direction > 0 {
                                             Command::NextFolder
@@ -1177,14 +1180,14 @@ impl Render for Viewer {
                                     ))
                                     .child(self.button(
                                         if direction > 0 {
-                                            "先頭へ戻る"
+                                            tr!("wrap-first")
                                         } else {
-                                            "末尾へ戻る"
+                                            tr!("wrap-last")
                                         },
                                         Command::Wrap,
                                         cx,
                                     ))
-                                    .child(self.button("キャンセル", Command::Dismiss, cx)),
+                                    .child(self.button(tr!("cancel"), Command::Dismiss, cx)),
                             ),
                     )
                 },
@@ -1198,9 +1201,12 @@ fn main() {
         .as_deref()
         .is_some_and(|p| p == std::path::Path::new("--help") || p == std::path::Path::new("-h"))
     {
-        println!(
-            "Nagame\nUsage: nagame [IMAGE_OR_FOLDER]\n\nCtrl+O: open | Left/Right: browse | +/-: zoom | F: fit | 1: actual size\nR: rotate | F11: fullscreen | S: slideshow | Esc: stop / leave fullscreen\nDrag: pan | Wheel: browse | Ctrl+Wheel: zoom\nUp/Down: folders | Ctrl+Left/Right: siblings | Alt+Up: parent\nPageUp/PageDown, Home/End: scroll (Shift: horizontal)"
-        );
+        let language = Settings::path()
+            .and_then(|path| Settings::read(&path))
+            .map(|settings| settings.language)
+            .unwrap_or_default();
+        i18n::activate(language);
+        println!("{}", tr!("cli-help"));
         return;
     }
     Application::new().run(move |cx: &mut App| {
@@ -1241,7 +1247,7 @@ fn main() {
                 }
             }
             Err(error) => {
-                eprintln!("ウィンドウを開けません: {error}");
+                eprintln!("{}", i18n::window_open_error(&error.to_string()));
                 cx.quit();
             }
         }

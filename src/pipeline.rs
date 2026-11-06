@@ -1,5 +1,6 @@
 //! Bounded decoded-image LRU; one worker, cancellable animation loads and neighbour prefetch.
 use crate::decoder;
+use crate::i18n::tr;
 use gpui::RenderImage;
 use std::{
     collections::VecDeque,
@@ -149,10 +150,7 @@ fn compose(
         (second, if rtl { 0 } else { w1 }),
     ] {
         let page_width = page.dimensions[0] as usize;
-        let bytes = page
-            .image
-            .as_bytes(0)
-            .ok_or("漫画画像のデータがありません")?;
+        let bytes = page.image.as_bytes(0).ok_or(tr!("spread-data-missing"))?;
         for (y, row) in bytes.chunks_exact(page_width * 4).enumerate() {
             let start = (y * width as usize + x_offset as usize) * 4;
             pixels.as_flat_samples_mut().samples[start..start + row.len()].copy_from_slice(row);
@@ -177,10 +175,10 @@ fn rotate(page: &Arc<Loaded>, turns: u8) -> Result<Arc<Loaded>, String> {
             height,
             page.image
                 .as_bytes(index)
-                .ok_or("画像フレームがありません")?
+                .ok_or(tr!("frame-missing"))?
                 .to_vec(),
         )
-        .ok_or("画像サイズが不正です")?;
+        .ok_or(tr!("image-size-invalid"))?;
         let pixels = match turns % 4 {
             1 => image::imageops::rotate90(&pixels),
             2 => image::imageops::rotate180(&pixels),

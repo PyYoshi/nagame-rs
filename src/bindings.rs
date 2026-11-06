@@ -1,5 +1,6 @@
 //! 設定で割り当て可能な操作と初期キー。Commandへの変換はViewerが行う。
 
+use crate::i18n::tr;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,36 +66,36 @@ impl Shortcut {
         Self::CopyImage,
         Self::CopyPath,
     ];
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Open => "画像を開く",
-            Self::OpenFolder => "フォルダを開く",
-            Self::Previous => "前の画像（漫画の読む方向に追従）",
-            Self::Next => "次の画像（漫画の読む方向に追従）",
-            Self::Advance => "次の画像（読む方向にかかわらず進む）",
-            Self::First => "最初の画像",
-            Self::Last => "最後の画像",
-            Self::PreviousFolder => "前のフォルダ",
-            Self::NextFolder => "次のフォルダ",
-            Self::PreviousSibling => "前隣のフォルダ",
-            Self::NextSibling => "次隣のフォルダ",
-            Self::Parent => "親フォルダ",
-            Self::SkipPrevious => "前へスキップ",
-            Self::SkipNext => "次へスキップ",
-            Self::ZoomIn => "ズームイン",
-            Self::ZoomOut => "ズームアウト",
-            Self::Fit => "ウィンドウに合わせる",
-            Self::Actual => "原寸",
-            Self::Rotate => "右回転",
-            Self::Fullscreen => "全画面",
-            Self::Slide => "自動スライド",
-            Self::Manga => "漫画モード",
-            Self::Settings => "設定",
-            Self::Info => "画像の情報",
-            Self::Reload => "再読み込み",
-            Self::SaveAs => "名前を付けて保存",
-            Self::CopyImage => "画像をコピー",
-            Self::CopyPath => "パスをコピー",
+            Self::Open => tr!("open-image"),
+            Self::OpenFolder => tr!("open-folder"),
+            Self::Previous => tr!("shortcut-previous"),
+            Self::Next => tr!("shortcut-next"),
+            Self::Advance => tr!("shortcut-advance"),
+            Self::First => tr!("first-image"),
+            Self::Last => tr!("last-image"),
+            Self::PreviousFolder => tr!("previous-folder"),
+            Self::NextFolder => tr!("next-folder"),
+            Self::PreviousSibling => tr!("previous-sibling"),
+            Self::NextSibling => tr!("next-sibling"),
+            Self::Parent => tr!("parent-folder"),
+            Self::SkipPrevious => tr!("skip-previous"),
+            Self::SkipNext => tr!("skip-next"),
+            Self::ZoomIn => tr!("zoom-in"),
+            Self::ZoomOut => tr!("zoom-out"),
+            Self::Fit => tr!("fit-window"),
+            Self::Actual => tr!("actual-size"),
+            Self::Rotate => tr!("rotate-right"),
+            Self::Fullscreen => tr!("fullscreen"),
+            Self::Slide => tr!("slideshow"),
+            Self::Manga => tr!("manga"),
+            Self::Settings => tr!("settings"),
+            Self::Info => tr!("image-info"),
+            Self::Reload => tr!("reload"),
+            Self::SaveAs => tr!("save-as"),
+            Self::CopyImage => tr!("copy-image"),
+            Self::CopyPath => tr!("copy-path"),
         }
     }
 }

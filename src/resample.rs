@@ -1,4 +1,5 @@
 //! Display-only resampling. Source pixels remain available for export and zoom changes.
+use crate::i18n::tr;
 use gpui::{ImageId, RenderImage};
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -26,13 +27,13 @@ impl Algorithm {
         Self::Cubic,
         Self::Lanczos3,
     ];
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Gpu => "GPU Linear（高速）",
-            Self::Nearest => "最近傍（ドットを維持）",
-            Self::Linear => "バイリニア",
-            Self::Cubic => "バイキュービック",
-            Self::Lanczos3 => "Lanczos3",
+            Self::Gpu => tr!("gpu-linear"),
+            Self::Nearest => tr!("nearest"),
+            Self::Linear => tr!("bilinear"),
+            Self::Cubic => tr!("bicubic"),
+            Self::Lanczos3 => tr!("lanczos3"),
         }
     }
     pub fn next(self, direction: i32) -> Self {
@@ -79,13 +80,13 @@ fn resize(
             return Err("cancelled".into());
         }
         let dimensions = source.size(index);
-        let bytes = source.as_bytes(index).ok_or("画像フレームがありません")?;
+        let bytes = source.as_bytes(index).ok_or(tr!("frame-missing"))?;
         let original = image::RgbaImage::from_raw(
             u32::from(dimensions.width),
             u32::from(dimensions.height),
             bytes.to_vec(),
         )
-        .ok_or("画像サイズが不正です")?;
+        .ok_or(tr!("image-size-invalid"))?;
         let pixels = if algorithm == Algorithm::Nearest {
             image::imageops::resize(&original, width, height, algorithm.filter())
         } else {
@@ -282,7 +283,7 @@ impl State {
                 })
                 .is_err()
             {
-                self.error = Some("補間処理スレッドが終了しました".into());
+                self.error = Some(tr!("resampler-stopped"));
                 changed = true;
             }
         }

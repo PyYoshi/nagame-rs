@@ -1,9 +1,10 @@
 //! メニューバー・右クリックメニューの描画とキー操作。実行はCommandへ集約する。
 
+use crate::i18n::tr;
 use crate::{Command, Viewer, settings::SortOrder};
 use gpui::{prelude::*, *};
 pub const HEIGHT: f32 = 28.;
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Menu {
     File,
     List,
@@ -12,58 +13,61 @@ pub enum Menu {
 }
 impl Menu {
     const ALL: [Self; 4] = [Self::File, Self::List, Self::View, Self::Other];
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            Self::File => "ファイル",
-            Self::List => "リスト",
-            Self::View => "表示",
-            Self::Other => "その他",
+            Self::File => tr!("menu-file"),
+            Self::List => tr!("menu-list"),
+            Self::View => tr!("menu-view"),
+            Self::Other => tr!("menu-other"),
         }
     }
-    fn entries(self) -> Vec<(&'static str, Command)> {
+    fn entries(self) -> Vec<(String, Command)> {
         match self {
             Self::File => vec![
-                ("画像を開く…", Command::Open),
-                ("フォルダを開く…", Command::OpenFolder),
-                ("再読み込み", Command::Reload),
-                ("名前を付けて保存…", Command::SaveAs),
-                ("画像をコピー", Command::CopyImage),
-                ("ファイルのパスをコピー", Command::CopyPath),
-                ("フォルダをファイラーで開く", Command::Reveal),
+                (tr!("open-image-menu"), Command::Open),
+                (tr!("open-folder-menu"), Command::OpenFolder),
+                (tr!("reload"), Command::Reload),
+                (tr!("save-as-menu"), Command::SaveAs),
+                (tr!("copy-image"), Command::CopyImage),
+                (tr!("copy-file-path"), Command::CopyPath),
+                (tr!("reveal-folder"), Command::Reveal),
             ],
             Self::List => vec![
-                ("前の画像", Command::Previous),
-                ("次の画像", Command::Next),
-                ("前へスキップ", Command::SkipPrevious),
-                ("次へスキップ", Command::SkipNext),
-                ("最初の画像", Command::First),
-                ("最後の画像", Command::Last),
-                ("前のフォルダ", Command::PreviousFolder),
-                ("次のフォルダ", Command::NextFolder),
-                ("前隣のフォルダ", Command::PreviousSibling),
-                ("次隣のフォルダ", Command::NextSibling),
-                ("親フォルダ", Command::Parent),
-                ("名前順", Command::Sort(SortOrder::Name)),
-                ("更新日時順", Command::Sort(SortOrder::Modified)),
-                ("サイズ順", Command::Sort(SortOrder::Size)),
-                ("拡張子順", Command::Sort(SortOrder::Extension)),
-                ("ランダム", Command::Sort(SortOrder::Random)),
-                ("逆順", Command::ReverseSort),
+                (tr!("previous-image"), Command::Previous),
+                (tr!("next-image"), Command::Next),
+                (tr!("skip-previous"), Command::SkipPrevious),
+                (tr!("skip-next"), Command::SkipNext),
+                (tr!("first-image"), Command::First),
+                (tr!("last-image"), Command::Last),
+                (tr!("previous-folder"), Command::PreviousFolder),
+                (tr!("next-folder"), Command::NextFolder),
+                (tr!("previous-sibling"), Command::PreviousSibling),
+                (tr!("next-sibling"), Command::NextSibling),
+                (tr!("parent-folder"), Command::Parent),
+                (tr!("sort-name"), Command::Sort(SortOrder::Name)),
+                (tr!("sort-modified"), Command::Sort(SortOrder::Modified)),
+                (tr!("sort-size"), Command::Sort(SortOrder::Size)),
+                (tr!("sort-extension"), Command::Sort(SortOrder::Extension)),
+                (tr!("random"), Command::Sort(SortOrder::Random)),
+                (tr!("reverse-order"), Command::ReverseSort),
             ],
             Self::View => vec![
-                ("画像の情報", Command::Info),
-                ("画像のあるフォルダを開く", Command::Reveal),
-                ("ズームイン", Command::ZoomIn),
-                ("ズームアウト", Command::ZoomOut),
-                ("ウィンドウに合わせる", Command::Fit),
-                ("原寸", Command::Actual),
-                ("右回転", Command::Rotate),
-                ("全画面", Command::Fullscreen),
-                ("漫画モード", Command::Manga),
-                ("漫画の読む方向を切り替え", Command::ReadingDirection),
-                ("自動スライド", Command::Slide),
+                (tr!("image-info"), Command::Info),
+                (tr!("reveal-image-folder"), Command::Reveal),
+                (tr!("zoom-in"), Command::ZoomIn),
+                (tr!("zoom-out"), Command::ZoomOut),
+                (tr!("fit-window"), Command::Fit),
+                (tr!("actual-size"), Command::Actual),
+                (tr!("rotate-right"), Command::Rotate),
+                (tr!("fullscreen"), Command::Fullscreen),
+                (tr!("manga"), Command::Manga),
+                (tr!("reading-direction"), Command::ReadingDirection),
+                (tr!("slideshow"), Command::Slide),
             ],
-            Self::Other => vec![("設定…", Command::Settings), ("画像の情報", Command::Info)],
+            Self::Other => vec![
+                (tr!("settings-menu"), Command::Settings),
+                (tr!("image-info"), Command::Info),
+            ],
         }
     }
 }
@@ -79,7 +83,7 @@ impl Viewer {
             .bg(rgb(0x20242b))
             .children(Menu::ALL.into_iter().map(|menu| {
                 div()
-                    .id(menu.label())
+                    .id(menu as usize)
                     .px_3()
                     .py_1()
                     .cursor_pointer()
@@ -122,7 +126,7 @@ impl Viewer {
                     .enumerate()
                     .map(|(index, (label, command))| {
                         div()
-                            .id(label)
+                            .id(index)
                             .px_3()
                             .py_1()
                             .cursor_pointer()

@@ -1,6 +1,7 @@
 //! 画像一覧・並び順・フォルダ探索と、表示倍率・パンの計算。
 //! デコードやWindow操作を持たず、AlbumとViewportの状態を扱う。
 
+use crate::i18n::tr;
 use crate::settings::{Settings, SortOrder};
 use std::{
     cmp::Ordering,
@@ -76,14 +77,12 @@ impl Album {
     pub fn open(path: &Path) -> Result<Self, String> {
         let path = path.canonicalize().map_err(|e| e.to_string())?;
         if !path.is_dir() && !supported(&path) {
-            return Err(
-                "対応形式: PNG / JPEG / GIF / BMP / WebP / TIFF / ICO / AVIF / HEIF / HEIC".into(),
-            );
+            return Err(tr!("supported-formats"));
         }
         let directory = if path.is_dir() {
             path.as_path()
         } else {
-            path.parent().ok_or("親フォルダがありません")?
+            path.parent().ok_or(tr!("parent-missing"))?
         };
         let mut paths = Vec::new();
         for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
@@ -188,7 +187,7 @@ impl Album {
         let mut directory = self.directory.clone();
         for _ in 0..4096 {
             directory = next_directory(&directory, direction, adjacent)
-                .ok_or("移動先のフォルダがありません")?;
+                .ok_or(tr!("destination-missing"))?;
             if let Ok(mut album) = Self::open(&directory)
                 && (adjacent || !album.paths.is_empty())
             {
@@ -198,11 +197,11 @@ impl Album {
                 return Ok(album);
             }
         }
-        Err("移動先の検索上限に達しました".into())
+        Err(tr!("search-limit"))
     }
 
     pub fn parent(&self) -> Result<Self, String> {
-        let parent = self.directory.parent().ok_or("親フォルダがありません")?;
+        let parent = self.directory.parent().ok_or(tr!("parent-missing"))?;
         let mut album = Self::open(parent)?;
         album.index = album.paths.len().saturating_sub(1);
         Ok(album)

@@ -13,6 +13,9 @@ ui-smoke = []
 gpui = "=0.2.2"
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp", "tiff", "ico"] }
 libheif-rs = { version = "3.0", default-features = false, features = ["v1_17"] }
+i18n-embed = { version = "0.16", default-features = false, features = ["fluent-system", "rust-embed", "desktop-requester"] }
+i18n-embed-fl = "0.10"
+rust-embed = { version = "8", features = ["debug-embed"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -35,3 +38,7 @@ xattr = { path = "vendor/xattr" }
 name = "decode-bench"
 path = "src/bin/decode-bench.rs"
 test = false
+
+[dev-dependencies]
+fluent-bundle = "0.16"
+fluent-syntax = "0.12"

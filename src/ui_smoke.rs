@@ -2,6 +2,7 @@
 use crate::{
     Viewer,
     bindings::Shortcut,
+    i18n::{Language, tr},
     settings::{BoundaryAction, Settings},
     settings_ui::Tab,
 };
@@ -65,6 +66,8 @@ pub fn start(handle: WindowHandle<Viewer>, cx: &mut App) {
                     assert_eq!(viewer.settings.shortcuts.get("q"), Some(&Shortcut::Rotate));
                     assert!(!viewer.settings.shortcuts.contains_key("r"));
                     assert_eq!(viewer.pages, 2);
+                    assert_eq!(viewer.settings.language, Language::English);
+                    assert_eq!(tr!("settings"), "Settings");
                 })
                 .unwrap();
             eprintln!("PASS: saved settings restored after process restart");
@@ -259,6 +262,48 @@ pub fn start(handle: WindowHandle<Viewer>, cx: &mut App) {
         eprintln!(
             "PASS: settings auto-scroll, persisted interpolation selection and display resampling"
         );
+
+        let initial_language = handle.read_with(cx, |v, _| v.settings.language).unwrap();
+        let initial_label = tr!("settings");
+        key(handle, cx, "ctrl-,");
+        key(handle, cx, "2");
+        for _ in 0..10 { key(handle, cx, "down"); }
+        key(handle, cx, "right");
+        key(handle, cx, "end");
+        key(handle, cx, "enter");
+        assert_eq!(tr!("settings"), initial_label);
+        handle.read_with(cx, |v, _| {
+            assert_eq!(v.settings_draft.as_ref().unwrap().language, Language::English);
+            assert_eq!(v.settings.language, initial_language);
+        }).unwrap();
+        key(handle, cx, "escape");
+        assert_eq!(tr!("settings"), initial_label);
+
+        for (language, selection, expected_label) in [
+            (Language::English, "end", "Settings"),
+            (Language::Japanese, "home", "設定"),
+            (Language::English, "end", "Settings"),
+        ] {
+            key(handle, cx, "ctrl-,");
+            key(handle, cx, "2");
+            for _ in 0..10 { key(handle, cx, "down"); }
+            key(handle, cx, "right");
+            key(handle, cx, selection);
+            if language == Language::Japanese { key(handle, cx, "down"); }
+            key(handle, cx, "enter");
+            key(handle, cx, "enter");
+            executor.timer(Duration::from_millis(150)).await;
+            assert_eq!(tr!("settings"), expected_label);
+            assert_eq!(Settings::read(&Settings::path().unwrap()).unwrap().language, language);
+            if std::env::var_os("NAGAME_UI_LANGUAGE_SNAPSHOT").is_some() {
+                key(handle, cx, "ctrl-,");
+                key(handle, cx, "2");
+                eprintln!("SNAPSHOT: language {language:?}");
+                executor.timer(Duration::from_secs(3)).await;
+                key(handle, cx, "escape");
+            }
+        }
+        eprintln!("PASS: language draft, cancel, Japanese/English apply and persistence");
         for algorithm in [crate::resample::Algorithm::Linear,crate::resample::Algorithm::Cubic,crate::resample::Algorithm::Lanczos3] {
             let old=handle.read_with(cx,|v,_|v.resampling.ready_id()).unwrap();
             handle.update(cx,|v,_,cx| {

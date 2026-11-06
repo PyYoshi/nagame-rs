@@ -1,6 +1,7 @@
 //! 設定の既定値・正規化・JSON永続化。UIの下書きと適用はViewerが管理する。
 //! 不足フィールドは既定値で補い、保存は一時ファイルからのrenameで行う。
 
+use crate::i18n::{self, tr};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -19,12 +20,12 @@ pub enum BoundaryAction {
     Stop,
 }
 impl BoundaryAction {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Ask => "移動先を確認",
-            Self::Wrap => "反対端へ戻る",
-            Self::Folder => "前後のフォルダへ",
-            Self::Stop => "その場で停止",
+            Self::Ask => tr!("boundary-ask"),
+            Self::Wrap => tr!("boundary-wrap"),
+            Self::Folder => tr!("boundary-folder"),
+            Self::Stop => tr!("boundary-stop"),
         }
     }
     pub fn next(self) -> Self {
@@ -54,19 +55,20 @@ impl SortOrder {
         Self::Extension,
         Self::Random,
     ];
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Name => "名前",
-            Self::Modified => "更新日時",
-            Self::Size => "ファイルサイズ",
-            Self::Extension => "拡張子",
-            Self::Random => "ランダム",
+            Self::Name => tr!("name"),
+            Self::Modified => tr!("modified"),
+            Self::Size => tr!("file-size"),
+            Self::Extension => tr!("extension"),
+            Self::Random => tr!("random"),
         }
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub language: i18n::Language,
     pub shortcuts: std::collections::BTreeMap<String, crate::bindings::Shortcut>,
     pub boundary: BoundaryAction,
     pub sort: SortOrder,
@@ -92,6 +94,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            language: i18n::Language::default(),
             shortcuts: crate::bindings::defaults(),
             boundary: BoundaryAction::Ask,
             sort: SortOrder::Name,
@@ -133,13 +136,13 @@ impl Settings {
         std::env::var_os("HOME")
             .filter(|p| !p.is_empty())
             .map(|p| PathBuf::from(p).join(".config/nagame/settings.json"))
-            .ok_or("設定の保存先が見つかりません".into())
+            .ok_or(tr!("settings-path-missing"))
     }
     pub fn read(path: &Path) -> Result<Self, String> {
         match fs::read(path) {
             Ok(bytes) => {
                 let mut settings: Self = serde_json::from_slice(&bytes)
-                    .map_err(|e| format!("設定ファイルを読み込めません: {e}"))?;
+                    .map_err(|e| i18n::settings_read_error(&e.to_string()))?;
                 settings.normalize();
                 Ok(settings)
             }
@@ -148,7 +151,7 @@ impl Settings {
         }
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        let parent = path.parent().ok_or("設定の保存先が不正です")?;
+        let parent = path.parent().ok_or(tr!("settings-path-invalid"))?;
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -171,7 +174,7 @@ impl Settings {
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
         }
-        result.map_err(|e| format!("設定を保存できません: {e}"))
+        result.map_err(|e| i18n::settings_save_error(&e.to_string()))
     }
 }
 
@@ -185,6 +188,7 @@ mod tests {
         let path = directory.join("nested/settings.json");
         assert_eq!(Settings::read(&path).unwrap(), Settings::default());
         let saved = Settings {
+            language: i18n::Language::English,
             slideshow_seconds: 17,
             shrink_algorithm: crate::resample::Algorithm::Lanczos3,
             enlarge_algorithm: crate::resample::Algorithm::Nearest,
@@ -196,6 +200,7 @@ mod tests {
         assert_eq!(Settings::read(&path).unwrap(), saved);
         fs::write(&path, br#"{"slideshow_seconds":0,"sort":"size"}"#).unwrap();
         let old = Settings::read(&path).unwrap();
+        assert_eq!(old.language, i18n::Language::System);
         assert_eq!(old.slideshow_seconds, 1);
         assert_eq!(old.sort, SortOrder::Size);
         assert!(old.prefetch);

@@ -9,6 +9,7 @@
 | ファイル | 主な型・入口 | 責務 |
 |---|---|---|
 | [main.rs](../src/main.rs) | `Viewer`, `Command`, `main` | 起動、状態の所有、入力の振り分け、非同期結果の反映、描画、GPU画像の退役 |
+| [i18n.rs](../src/i18n.rs) | `tr!`, 共有ローダー | Fluentの翻訳リソース、動的メッセージの引数、英語フォールバック |
 | [model.rs](../src/model.rs) | `Album`, `Viewport`, `supported` | 画像一覧、並び替え、フォルダ探索、倍率・パン計算 |
 | [decoder.rs](../src/decoder.rs) | `Decoded`, `decode_progressive`, `dimensions` | 形式判定、向き、GIF、libheif、表示画素への変換 |
 | [pipeline.rs](../src/pipeline.rs) | `Loader`, `Request`, `Response`, `Loaded`, `worker` | デコード用ワーカー、世代管理、LRU、先読み、見開き合成・回転 |
@@ -94,3 +95,7 @@ LRUは256 MiB・最大8エントリー。キーにはパス、更新日時、フ
 画像保存も全エンコードを終えてから一時ファイルへ書き込み、sync・renameする。コーデック失敗時に既存ファイルを切り詰めない。GIFはフレームと時間を渡し、それ以外は先頭フレームを書き出す。元メタデータは引き継がない。
 
 Linuxの画像コピーはBGRAをRGBAのPNGへ変換し、Waylandで `wl-copy`、X11で `xclip` に渡す。GPUI 0.2.2のLinuxクリップボード経路が外部へ画像形式を公開しないための補完。保存やコピーのエンコード・外部コマンド実行はバックグラウンドで行い、失敗はUIへ返す。
+
+## 多言語対応
+
+UI・アプリ自身のエラー・CLIヘルプはFluentの日本語・英語リソースへ集約している。初回はOS言語に合わせ、手動で保存した指定があればそれを優先する。共有ローダーはUIとワーカーから利用でき、翻訳は開発ビルドも含めてバイナリへ埋め込む。設定の保存値やUI要素IDは翻訳文言に依存させない。採用理由・検証の限界・追加手順は [多言語対応](localization.md) を参照する。

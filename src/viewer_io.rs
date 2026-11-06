@@ -1,6 +1,7 @@
 //! Viewerのファイル選択、画像保存・コピー、情報画面。
 //! 出力は表示用リサイズ画像を使わず、元解像度のBGRAからRGBAへ戻す。
 
+use crate::i18n::{self, tr};
 use crate::{Command, Viewer};
 use gpui::{
     AnyElement, Context, PathPromptOptions, RenderImage, div, prelude::*, px, relative, rgb, rgba,
@@ -11,13 +12,13 @@ fn rgba_pixels(image: &RenderImage, index: usize) -> Result<image::RgbaImage, St
     let size = image.size(index);
     let mut bytes = image
         .as_bytes(index)
-        .ok_or("画像データがありません")?
+        .ok_or(tr!("image-data-missing"))?
         .to_vec();
     for pixel in bytes.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     image::RgbaImage::from_raw(u32::from(size.width), u32::from(size.height), bytes)
-        .ok_or("画像サイズが不正です".into())
+        .ok_or(tr!("image-size-invalid"))
 }
 fn png(image: &RenderImage) -> Result<Vec<u8>, String> {
     let mut output = Cursor::new(Vec::new());
@@ -33,8 +34,7 @@ fn save(image: &RenderImage, path: &Path) -> Result<(), String> {
     {
         image::ImageFormat::Jpeg
     } else {
-        image::ImageFormat::from_path(path)
-            .map_err(|_| "保存形式を拡張子で指定してください（PNG/JPEG/GIF/BMP/WebP/TIFF/ICO）")?
+        image::ImageFormat::from_path(path).map_err(|_| tr!("save-extension"))?
     };
     if !matches!(
         format,
@@ -46,7 +46,7 @@ fn save(image: &RenderImage, path: &Path) -> Result<(), String> {
             | image::ImageFormat::Tiff
             | image::ImageFormat::Ico
     ) {
-        return Err("この保存形式には対応していません".into());
+        return Err(tr!("save-unsupported"));
     }
     let mut output = Cursor::new(Vec::new());
     if format == image::ImageFormat::Gif {
@@ -74,7 +74,7 @@ fn save(image: &RenderImage, path: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
     // Encode fully before touching the destination; a codec error cannot truncate it.
-    let parent = path.parent().ok_or("保存先が不正です")?;
+    let parent = path.parent().ok_or(tr!("save-path-invalid"))?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -120,24 +120,23 @@ fn publish_png(bytes: &[u8]) -> Result<(), String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| {
-            format!(
-                "画像コピーには {} が必要です: {e}",
-                if wayland { "wl-clipboard" } else { "xclip" }
+            i18n::clipboard_tool_error(
+                if wayland { "wl-clipboard" } else { "xclip" },
+                &e.to_string(),
             )
         })?;
     let write = child
         .stdin
         .take()
-        .ok_or("クリップボード入力を開けません")?
+        .ok_or(tr!("clipboard-input-failed"))?
         .write_all(bytes);
     let output = child.wait_with_output().map_err(|e| e.to_string())?;
-    write.map_err(|e| format!("クリップボードへ書き込めません: {e}"))?;
+    write.map_err(|e| i18n::clipboard_write_error(&e.to_string()))?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "画像コピーに失敗しました: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+        Err(i18n::clipboard_copy_error(
+            String::from_utf8_lossy(&output.stderr).trim(),
         ))
     }
 }
@@ -147,7 +146,7 @@ impl Viewer {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("フォルダを開く".into()),
+            prompt: Some(tr!("open-folder").into()),
         });
         cx.spawn(async move |viewer, cx| {
             let result = selection.await;
@@ -169,7 +168,7 @@ impl Viewer {
     }
     pub(super) fn copy_image(&mut self, cx: &mut Context<Self>) {
         let Some(image) = self.image.clone() else {
-            self.notice = Some("画像が開かれていません".into());
+            self.notice = Some(tr!("no-open-image"));
             return;
         };
         let task = cx.background_executor().spawn(async move {
@@ -188,7 +187,7 @@ impl Viewer {
                             let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, _bytes);
                             cx.write_to_clipboard(gpui::ClipboardItem::new_image(&image));
                         }
-                        this.notice = Some("画像をコピーしました".into());
+                        this.notice = Some(tr!("image-copied"));
                     }
                     Err(error) => this.error = Some(error),
                 }
@@ -199,7 +198,7 @@ impl Viewer {
     }
     pub(super) fn save_as(&mut self, cx: &mut Context<Self>) {
         let Some(image) = self.image.clone() else {
-            self.notice = Some("画像が開かれていません".into());
+            self.notice = Some(tr!("no-open-image"));
             return;
         };
         let name = format!(
@@ -241,7 +240,7 @@ impl Viewer {
             let result = task.await;
             let _ = viewer.update(cx, |this, cx| {
                 match result {
-                    Ok(()) => this.notice = Some(format!("保存しました: {}", path.display())),
+                    Ok(()) => this.notice = Some(i18n::saved_image(&path)),
                     Err(error) => this.error = Some(error),
                 }
                 cx.notify();
@@ -255,18 +254,30 @@ impl Viewer {
             return;
         }
         let Some(path) = self.album.current().map(std::path::PathBuf::from) else {
-            self.notice = Some("画像が開かれていません".into());
+            self.notice = Some(tr!("no-open-image"));
             return;
         };
         self.info_visible = true;
-        self.info_text = Some("情報を読み込み中…".into());
+        self.info_text = Some(tr!("loading-info"));
         let dimensions = self.dimensions;
         let frames = self.image.as_ref().map(|p| p.frame_count()).unwrap_or(0);
         let pages = self.pages;
-        let task=cx.background_executor().spawn(async move {
-            let metadata=std::fs::metadata(&path).map_err(|e|e.to_string())?;
-            let [w,h]=crate::decoder::dimensions(&path)?;
-            Ok::<_,String>(format!("ファイル: {}\n\n形式: {}\nファイルサイズ: {} bytes\n元の画像: {w} × {h}\n表示画像: {} × {}\nフレーム数: {frames}\n表示ページ数: {pages}\n\n画像の書き出しは、回転・見開きを含む表示画像を保存します。GIF以外は先頭フレームのみです。",path.display(),path.extension().unwrap_or_default().to_string_lossy().to_uppercase(),metadata.len(),dimensions[0],dimensions[1]))
+        let task = cx.background_executor().spawn(async move {
+            let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+            let [w, h] = crate::decoder::dimensions(&path)?;
+            Ok::<_, String>(i18n::image_information(i18n::ImageInformation {
+                path: &path,
+                format: &path
+                    .extension()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_uppercase(),
+                bytes: metadata.len(),
+                original: [w, h],
+                displayed: dimensions,
+                frames,
+                pages,
+            }))
         });
         cx.spawn(async move |viewer, cx| {
             let result = task.await;
@@ -297,7 +308,7 @@ impl Viewer {
                     .rounded_lg()
                     .border_1()
                     .border_color(rgb(0x606a79))
-                    .child(div().text_xl().mb_4().child("画像の情報"))
+                    .child(div().text_xl().mb_4().child(tr!("image-info")))
                     .children(
                         self.info_text
                             .clone()
@@ -307,7 +318,7 @@ impl Viewer {
                             .collect::<Vec<_>>(),
                     )
                     .child(div().flex().justify_end().mt_4().child(self.button(
-                        "閉じる",
+                        tr!("close"),
                         Command::Info,
                         cx,
                     ))),
