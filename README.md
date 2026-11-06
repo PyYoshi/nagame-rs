@@ -1,3 +1,5 @@
+<img src="assets/branding/logo.svg" alt="Nagame logo" width="112" height="112">
+
 # Nagame（ながめ）
 
 画像を眺め、フォルダをめくるための、Rust / GPUI 製画像ビューアーです。Linux向けに開発しています。日本語と英語に対応し、初回はOSの言語に合わせます（日本語以外は英語）。設定で選んだ言語は保存して次回も使います。

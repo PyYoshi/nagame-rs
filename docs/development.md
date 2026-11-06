@@ -17,7 +17,7 @@ cargo run --locked --release -- /path/to/images
 
 開発用CLIは [aqua](https://aquaproj.github.io/) で管理する。aquaが未導入の場合は [公式の導入手順](https://aquaproj.github.io/docs/install) に従い、`aqua` をPATHから実行できるようにする。この環境ではaqua 2.65.2で確認した。
 
-[aqua.yaml](../aqua.yaml) でレジストリ・just・betterleaksのバージョンを固定し、[aqua-checksums.json](../aqua-checksums.json) に配布物のチェックサムを記録している。現在のjustは1.59.0、betterleaksはv1.10.0。インストール時はチェックサム照合を必須とする。
+[aqua.yaml](../aqua.yaml) でレジストリ・just・betterleaks・oxipngのバージョンを固定し、[aqua-checksums.json](../aqua-checksums.json) に配布物のチェックサムを記録している。現在のjustは1.59.0、betterleaksはv1.10.0、oxipngはv10.2.1。インストール時はチェックサム照合を必須とする。
 
 ```sh
 aqua install
@@ -35,6 +35,7 @@ just secrets
 | `just test` | 単体テスト |
 | `just clippy` | 全ターゲット・全featureのClippy検査 |
 | `just secrets` | betterleaksで現在のファイルを検査 |
+| `just optimize-png` | `assets/branding/*.png` をoxipngで最適化。`-o 4 --strip safe` を使い、透明画素のRGBを変更する `--alpha` は使わない |
 | `just check` | 整形検査→テスト→Clippy→秘密情報検査→開発用ビルド。失敗時は停止 |
 
 `just secrets` はjustfileのあるプロジェクトルートで、aqua経由の固定版betterleaksを直接実行する。Git未追跡のファイルも含め、現在のファイルを検査する。履歴の検査ではない。検出がなければ終了コード0、検出時は1を返す。

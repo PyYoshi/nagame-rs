@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Nagame logo - monochrome"><title>Nagame logo - monochrome</title><path d="M62 170L43 173Q24 176 21 157L8 80Q5 60 25 57L160 36Q180 33 183 53L187 75" fill="none" stroke="#253239" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M95 80H211Q236 80 236 105V191Q236 216 211 216H95Q70 216 70 191V105Q70 80 95 80Z M94 96H212Q220 96 220 104V150C197 179 182 189 160 165C138 141 117 134 86 169V104Q86 96 94 96Z" fill="#253239" fill-rule="evenodd"/>
+<defs><clipPath id="nagame-logo-image-area"><rect x="86" y="96" width="134" height="104" rx="8"/></clipPath></defs>
+<g clip-path="url(#nagame-logo-image-area)"><circle cx="215" cy="112" r="34" fill="#253239"/>
+</g></svg>

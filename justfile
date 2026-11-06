@@ -34,5 +34,9 @@ clippy:
 secrets:
     aqua -c aqua.yaml exec -- betterleaks dir --config .betterleaks.toml --redact .
 
+# ロゴのPNGを画素を変えずに最適化
+optimize-png:
+    aqua -c aqua.yaml exec -- oxipng -o 4 --strip safe assets/branding/*.png
+
 # 基本チェックを順に実行（失敗した時点で停止）
 check: fmt-check test clippy secrets build

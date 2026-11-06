@@ -56,6 +56,31 @@
       "algorithm": "sha256"
     },
     {
+      "id": "github_release/github.com/oxipng/oxipng/v10.2.1/oxipng-10.2.1-aarch64-apple-darwin.tar.gz",
+      "checksum": "7039FCFC78E8AA1ED2B57D848057A0296F082E92B3E1807AC65402D10D926764",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/oxipng/oxipng/v10.2.1/oxipng-10.2.1-aarch64-unknown-linux-musl.tar.gz",
+      "checksum": "FF21AA2A005B324C8DFBDF13CD2F469FB6728B27DACDED82635824ECD12E3B35",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/oxipng/oxipng/v10.2.1/oxipng-10.2.1-x86_64-apple-darwin.tar.gz",
+      "checksum": "111883BBE42B25E01CB1CA41F39F8094E4830B173F0E42BE342ECC4CA48F3131",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/oxipng/oxipng/v10.2.1/oxipng-10.2.1-x86_64-pc-windows-msvc.zip",
+      "checksum": "7E940F83EE46874B73F53031F96A15834CB70B220AF27391FB06FE7B4DD798E1",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/oxipng/oxipng/v10.2.1/oxipng-10.2.1-x86_64-unknown-linux-musl.tar.gz",
+      "checksum": "1813750EF592C5350CA79C88F98B2C0876D05C826DC7156245256D4255C1AD17",
+      "algorithm": "sha256"
+    },
+    {
       "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.582.0/registry.yaml",
       "checksum": "F38A1C5EBC3726395835BFEDEA47512D71951450C97C1C940F0D9FB62CED10A1",
       "algorithm": "sha256"

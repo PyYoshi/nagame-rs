@@ -11,3 +11,4 @@ registries:
 packages:
 - name: betterleaks/betterleaks@v1.10.0
 - name: casey/just@1.59.0
+- name: oxipng/oxipng@v10.2.1
