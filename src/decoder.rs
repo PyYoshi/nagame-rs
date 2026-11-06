@@ -60,6 +60,7 @@ pub fn decode_progressive(
                 return Err("cancelled".into());
             }
             let frame = frame.map_err(|e| e.to_string())?;
+            check_size(frame.buffer().width(), frame.buffer().height())?;
             bytes += frame.buffer().len() as u64;
             if bytes > BUDGET || frames.len() >= 1000 {
                 return Err(tr!("gif-limit"));
@@ -99,13 +100,20 @@ fn convert(frame: Frame, turns: u8) -> Frame {
     Frame::from_parts(pixels, 0, 0, delay)
 }
 
+/// 幅か高さが0の画像は、行単位の処理（見開き合成など）で扱えないため拒否する。
+fn check_size(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err(tr!("image-size-invalid"));
+    }
+    Ok(())
+}
+
 fn finish(frames: Vec<Frame>, turns: u8) -> Result<Decoded, String> {
     let converted: Vec<_> = frames.into_iter().map(|f| convert(f, turns)).collect();
     let first = converted.first().ok_or(tr!("no-frames"))?;
-    let dimensions = [
-        first.buffer().width() as f32,
-        first.buffer().height() as f32,
-    ];
+    let (width, height) = first.buffer().dimensions();
+    check_size(width, height)?;
+    let dimensions = [width as f32, height as f32];
     Ok(Decoded {
         frames: converted,
         dimensions,
@@ -162,6 +170,7 @@ fn decode_heif(path: &Path) -> Result<image::RgbaImage, String> {
         .interleaved
         .ok_or(tr!("rgba-plane-missing"))?;
     let (w, h) = (image.width(), image.height());
+    check_size(w, h)?;
     if w > 16384 || h > 16384 || u64::from(w) * u64::from(h) * 4 > BUDGET {
         return Err(tr!("image-too-large"));
     }

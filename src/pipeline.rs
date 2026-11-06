@@ -450,4 +450,47 @@ mod manga_tests {
         assert_eq!(joined.dimensions, [12., 6.]);
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn zero_width_page_is_rejected_without_stopping_the_worker() {
+        let root = std::env::temp_dir().join(format!("nagame-zero-width-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        image::RgbaImage::new(4, 6)
+            .save(root.join("page.png"))
+            .unwrap();
+        // 論理スクリーン幅0に1x1の画像ブロックを1つ持つGIF。gifクレートは幅0を拒否しない。
+        std::fs::write(
+            root.join("zero.gif"),
+            [
+                b"GIF89a".as_slice(),
+                &[0, 0, 1, 0, 0x80, 0, 0],
+                &[0, 0, 0, 255, 255, 255],
+                &[0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0],
+                &[2, 2, 0x44, 1, 0, 0x3b],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let (loader, results) = worker();
+        let request = |generation, second: Option<&str>| Request {
+            generation,
+            path: root.join("page.png"),
+            turns: 0,
+            neighbours: vec![],
+            reload: false,
+            second: second.map(|name| root.join(name)),
+            rtl: false,
+            landscape_single: false,
+        };
+        loader.send(request(1, Some("zero.gif"))).unwrap();
+        let rejected = results
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(rejected.result.err(), Some(tr!("image-size-invalid")));
+        loader.send(request(2, None)).unwrap();
+        let next = results
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(next.result.unwrap().dimensions, [4., 6.]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
