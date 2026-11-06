@@ -1,0 +1,64 @@
+{
+  "checksums": [
+    {
+      "id": "github_release/github.com/betterleaks/betterleaks/v1.10.0/betterleaks_1.10.0_darwin_arm64.tar.gz",
+      "checksum": "91EAEA97709D3308C7712574A56260539C65FBD0672711537AA68D566EA630B3",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/betterleaks/betterleaks/v1.10.0/betterleaks_1.10.0_darwin_x64.tar.gz",
+      "checksum": "71B3F30602856E622008C248B1B47B2BA15B227F4A033E8BFDFA05A21EC7D531",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/betterleaks/betterleaks/v1.10.0/betterleaks_1.10.0_linux_arm64.tar.gz",
+      "checksum": "3D7585CBE4F947AEF6E31662F65BEB5B43B104381A691B6B81B157EBFBB0C02D",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/betterleaks/betterleaks/v1.10.0/betterleaks_1.10.0_linux_x64.tar.gz",
+      "checksum": "9D9AD503CD5D80D18A939352266C3FCCA52F10DA9B83CD5CFE646989B13940FE",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/betterleaks/betterleaks/v1.10.0/betterleaks_1.10.0_windows_arm64.zip",
+      "checksum": "0799FDC4588A934FD5D727920117A5E0D5D24D2CDEAD55445E84C5619D201D9C",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/betterleaks/betterleaks/v1.10.0/betterleaks_1.10.0_windows_x64.zip",
+      "checksum": "BAFD52ABCB440C2A06EA36D5E1FFF217315DB0AAC517E60D74E64B2BB9F18468",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/casey/just/1.59.0/just-1.59.0-aarch64-apple-darwin.tar.gz",
+      "checksum": "6574CEA774ED4CAE12E24B6AA11857DE33E80DAB4667CF628FD5840DF96A2A9D",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/casey/just/1.59.0/just-1.59.0-aarch64-unknown-linux-musl.tar.gz",
+      "checksum": "23871B1702BFD550FB5F901778FD4290ECF2EE034A45A889FBE96D89B188086D",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/casey/just/1.59.0/just-1.59.0-x86_64-apple-darwin.tar.gz",
+      "checksum": "036EAD9DF9BC31DBAE9934AE3B4236ED124D0BAFCFFD33439460AE084D5C9CB7",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/casey/just/1.59.0/just-1.59.0-x86_64-pc-windows-msvc.zip",
+      "checksum": "9C5463E2D0974E31BEE71346AA5CBF19167DE1585A4ABC1BAE7B3B04604EA9C0",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/casey/just/1.59.0/just-1.59.0-x86_64-unknown-linux-musl.tar.gz",
+      "checksum": "409044617B6F06517C1035E55CA38C8C856FF8B650E41BC2AA1EF82D5903A23E",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.582.0/registry.yaml",
+      "checksum": "F38A1C5EBC3726395835BFEDEA47512D71951450C97C1C940F0D9FB62CED10A1",
+      "algorithm": "sha256"
+    }
+  ]
+}

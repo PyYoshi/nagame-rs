@@ -1,0 +1,37 @@
+[package]
+name = "nagame"
+default-run = "nagame"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A fast single-window image viewer built with Rust and GPUI"
+
+[features]
+ui-smoke = []
+
+[dependencies]
+gpui = "=0.2.2"
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp", "tiff", "ico"] }
+libheif-rs = { version = "3.0", default-features = false, features = ["v1_17"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.dev]
+debug = 0
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+
+[patch.crates-io]
+# GPUI -> gpui_http_client -> zed-async-tar -> xattr 0.2.3 uses a removed libc alias on Linux.
+xattr = { path = "vendor/xattr" }
+
+
+[[bin]]
+name = "decode-bench"
+path = "src/bin/decode-bench.rs"
+test = false
