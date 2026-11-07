@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Register Nagame's desktop entry and icons in the current user's XDG data directory."""
+"""Nagameのデスクトップエントリーとアイコンを、現在のユーザーのXDGデータディレクトリへ登録する。"""
 # SPDX-License-Identifier: GPL-3.0-or-later
 import argparse
 import os
@@ -10,8 +10,8 @@ import tempfile
 
 
 def exec_argument(path):
-    # Desktop Entry Exec quoting is different from shell quoting. Escape the
-    # command argument first, then the desktop string's backslash layer.
+    # Desktop EntryのExecの引用規則はシェルと異なる。先にコマンド引数としてエスケープし、
+    # 次にデスクトップエントリーの文字列としてバックスラッシュをエスケープする。
     value = str(path)
     if any(character in value for character in ('\n', '\r', '\t', '=')):
         raise ValueError('The executable path contains characters unsupported by desktop entries')
@@ -21,15 +21,15 @@ def exec_argument(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('binary', type=Path, help='The AppImage or standalone nagame executable to launch')
+    parser.add_argument('binary', type=Path, help='起動するAppImage、または単体のnagame実行ファイル')
     arguments = parser.parse_args()
     binary = arguments.binary.resolve(strict=True)
     if not binary.is_file() or not os.access(binary, os.X_OK):
         parser.error('The binary must be an executable file')
     project = Path(__file__).resolve().parent.parent
     desktop = (project / 'packaging/linux/nagame.desktop').read_text()
-    # GIO checks the first executable before expanding %% in its filename.
-    # env keeps that first executable fixed and supports literal % in the path.
+    # GIOは、ファイル名の%%を展開する前に先頭の実行ファイルを確認する。
+    # 先頭をenvに固定すると、パスに%をそのまま含められる。
     desktop = desktop.replace('Exec=nagame %f', 'Exec=/usr/bin/env -- ' + exec_argument(binary) + ' %f')
     data = Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local/share')
     if not data.is_absolute():
@@ -44,8 +44,8 @@ def main():
     scalable = theme / 'scalable/apps'
     scalable.mkdir(parents=True, exist_ok=True)
     shutil.copy2(project / 'assets/branding/logo.svg', scalable / 'nagame.svg')
-    # A running desktop can retain a failed theme-name lookup. An absolute
-    # icon path also works independently of the active theme's search paths.
+    # 実行中のデスクトップは、テーマ名でのアイコン検索に失敗した結果を覚えていることがある。
+    # 絶対パスなら、使用中のテーマの検索パスにも左右されない。
     icon = str(scalable / 'nagame.svg')
     icon = icon.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
     desktop = desktop.replace('Icon=nagame', 'Icon=' + icon)
@@ -70,8 +70,8 @@ def main():
             subprocess.run([executable, *args], check=True)
     notifier = shutil.which('dbus-send')
     if notifier and os.environ.get('DBUS_SESSION_BUS_ADDRESS'):
-        # Same notification as KIconLoader::emitChange(Desktop); rebuild the
-        # in-process KDE icon caches without restarting Plasma or its apps.
+        # KIconLoader::emitChange(Desktop)と同じ通知。Plasmaやアプリを再起動せずに、
+        # 各プロセス内のKDEのアイコンキャッシュを作り直させる。
         subprocess.run([notifier, '--session', '--type=signal', '/KIconLoader',
                         'org.kde.KIconLoader.iconChanged', 'int32:0'], check=True)
     print('Registered:', applications / 'nagame.desktop')

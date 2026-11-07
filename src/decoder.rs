@@ -29,7 +29,7 @@ fn limit_error(limit: u64) -> String {
 }
 
 /// 内容から判定したGIFか。拡張子は見ない。
-#[allow(dead_code)] // decode-bench shares this module but does not open animations.
+#[allow(dead_code)] // decode-benchもこのモジュールを使うが、アニメーションは開かない。
 pub fn is_gif(path: &Path) -> bool {
     ImageReader::open(path)
         .and_then(|reader| reader.with_guessed_format())
@@ -147,6 +147,7 @@ pub fn gif_frames(path: &Path, turns: u8, limit: u64) -> Result<GifFrames, Strin
     })
 }
 
+/// 時計回りにturns×90°回転し、RGBAをBGRAへ並べ替える。遅延は元の値を保つ。
 fn convert(frame: Frame, turns: u8) -> Frame {
     let delay = frame.delay();
     let pixels = frame.into_buffer();
@@ -182,7 +183,8 @@ fn dimensions_of(frames: Vec<Frame>) -> Result<Decoded, String> {
     Ok(Decoded { frames, dimensions })
 }
 
-/// Read display geometry without decoding the pixel buffer (used for manga boundaries).
+/// 画素を展開せずに、画像の向き情報を反映した幅と高さを読む（利用者の追加回転は含まない）。
+/// 見開きで横長のページを単独表示するかの判定と、情報画面に使う。
 pub fn dimensions(path: &Path) -> Result<[u32; 2], String> {
     let ext = path
         .extension()
@@ -222,8 +224,8 @@ fn decode_heif(path: &Path, limit: u64) -> Result<image::RgbaImage, String> {
     if w > 16384 || h > 16384 || u64::from(w) * u64::from(h) * 4 > limit {
         return Err(tr!("heif-limit"));
     }
-    // libheif applies container irot/imir transforms and converts high bit depth
-    // to the 8-bit RGBA output requested here. HDR tone mapping is separate.
+    // libheifはコンテナのirot/imir（回転・反転）を適用し、高ビット深度もここで要求した
+    // 8bitのRGBAへ変換する。HDRのトーンマッピングは行わない。
     let image = lib
         .decode(&handle, ColorSpace::Rgb(RgbChroma::Rgba), None)
         .map_err(|e| e.to_string())?;
@@ -424,7 +426,7 @@ mod modern_format_tests {
         assert_eq!(frames[1].buffer().get_pixel(1, 2).0, [255, 0, 0, 255]);
         assert_eq!(frames[0].delay().numer_denom_ms(), (0, 1));
         assert_eq!(frames[1].delay().numer_denom_ms(), (70, 1));
-        // One frame is 24 bytes: the first frame alone fits, the whole GIF does not.
+        // 1フレームは24バイト。先頭フレームだけなら上限に収まるが、GIF全体は収まらない。
         let first = decode_limited(&path, 0, 24, false, || false).unwrap();
         assert_eq!(first.frames.len(), 1);
         assert_eq!(first.dimensions, [3., 2.]);

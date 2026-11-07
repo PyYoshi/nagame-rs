@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Real GPUI window regression using app-dispatched keys, isolated settings and fixtures.
+"""GPUIの実ウィンドウで回帰テストを行う。
 
-Build first: cargo build --locked --features ui-smoke
-Run: python3 tools/check_ui.py [target/debug/nagame]
-Requires a working desktop display. Does not inject desktop-wide input events.
+キー入力はアプリ内で発行し、設定と画像は一時ディレクトリに用意する。
+
+先にビルド: cargo build --locked --features ui-smoke
+実行: python3 tools/check_ui.py [target/debug/nagame]
+表示できるデスクトップ環境が必要。デスクトップ全体への入力は送らない。
 """
 import os
 import argparse
@@ -15,6 +17,7 @@ import zlib
 
 
 def png(path, width, height, color):
+    """単色のRGBA PNGを書く。"""
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
     row = b'\0' + bytes(color) * width
@@ -25,8 +28,8 @@ def png(path, width, height, color):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('binary', nargs='?', default='target/debug/nagame')
-    parser.add_argument('--window-state-only', action='store_true')
-    parser.add_argument('--wayland', action='store_true', help='Use the current Wayland session instead of X11')
+    parser.add_argument('--window-state-only', action='store_true', help='ウィンドウの大きさ・位置・最大化の保存と復元だけを確かめる')
+    parser.add_argument('--wayland', action='store_true', help='X11ではなく現在のWaylandセッションを使う')
     args = parser.parse_args()
     binary = Path(args.binary).resolve()
     with tempfile.TemporaryDirectory(prefix='nagame-window-check-') as temporary:
@@ -35,9 +38,11 @@ def main():
         images.mkdir()
         source = root / 'source.png'
         png(source, 1600, 1200, (50, 80, 180, 255))
+        # 高速な画像送りの負荷試験用に、同じPNGへのハードリンクを並べる。
         for i in range(501):
             os.link(source, images / f'{i:04}.png')
         env = dict(os.environ, NAGAME_UI_SMOKE='1', RUST_BACKTRACE='1', XDG_CONFIG_HOME=str(root / 'config'))
+        # このスクリプトが使うシナリオの指定は外から引き継がず、各runで明示する。
         env.pop('NAGAME_UI_RESTART', None)
         env.pop('NAGAME_UI_STRESS', None)
         env.pop('NAGAME_UI_FOLDER_NAVIGATION', None)

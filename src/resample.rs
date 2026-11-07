@@ -1,4 +1,4 @@
-//! Display-only resampling. Source pixels remain available for export and zoom changes.
+//! 表示専用のリサイズ（補間）。元画像の画素は、保存・コピーと倍率の変更のために残す。
 use crate::i18n::tr;
 use gpui::{ImageId, RenderImage};
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+/// 表示補間の方式。GpuはCPUで補間せず、元画像をGPUの線形補間で拡大縮小する。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Algorithm {
@@ -71,6 +72,7 @@ struct Response {
     result: Result<Images, String>,
 }
 
+/// 1枚の画像の全フレームをCPUで補間する。cancelledはフレームごとに確認する。
 fn resize(
     source: &RenderImage,
     width: u32,
@@ -94,9 +96,9 @@ fn resize(
         let pixels = if algorithm == Algorithm::Nearest {
             image::imageops::resize(&original, width, height, algorithm.filter())
         } else {
-            // image's floating-point resampler clamps every channel to 0..=1.
-            // Normalize BGRA before premultiplying, then restore u8 after filtering.
-            // Premultiplied color avoids transparent RGB causing halos.
+            // imageの浮動小数点リサンプラーは、全チャンネルを0〜1に切り詰める。
+            // BGRAを0〜1に正規化してからアルファを乗算し、補間後に8bitへ戻す。
+            // 乗算済みアルファで補間すると、透明部分のRGBが縁ににじまない。
             let premultiplied =
                 image::Rgba32FImage::from_fn(original.width(), original.height(), |x, y| {
                     let p = original.get_pixel(x, y).0;
@@ -143,6 +145,8 @@ pub struct State {
     since: Instant,
     sent: bool,
     ready: Option<(Key, Images)>,
+    /// CPU補間を選んでいるのに、GPUで拡大縮小している（出力が上限を超える、全フレームを
+    /// 保持していないアニメーション、逼迫の段階2）。ステータスバーに表示する。
     pub fallback: bool,
     pub error: Option<String>,
 }
@@ -154,6 +158,7 @@ impl Default for State {
         let cancellation = active.clone();
         std::thread::spawn(move || {
             while let Ok(mut request) = input.recv() {
+                // 溜まった要求は最新のものだけを処理する。世代が変わった要求と結果は捨てる。
                 while let Ok(newer) = input.try_recv() {
                     request = newer;
                 }
@@ -214,6 +219,7 @@ impl State {
     pub fn ready_images(&self) -> impl Iterator<Item = &Arc<RenderImage>> {
         self.ready.iter().flat_map(|(_, images)| images.iter())
     }
+    /// 要求と補間結果を捨てる。処理中の補間は世代番号で取り消す。
     pub fn clear(&mut self, retired: &mut Vec<Arc<RenderImage>>) {
         self.generation += 1;
         self.active.store(self.generation, Ordering::Relaxed);
@@ -274,9 +280,12 @@ impl State {
             .filter(|(k, _)| *k == key)
             .map(|(_, images)| images.clone())
     }
+    /// 補間を待っている（要求があり、結果もエラーもまだない）。
     pub fn pending(&self) -> bool {
         self.wanted.is_some() && self.ready.is_none() && self.error.is_none()
     }
+    /// 補間結果を受け取る。要求が60ms変わらなければワーカーへ送り、倍率の変更中に
+    /// 途中の大きさを補間しない。状態が変わったらtrue。
     pub fn tick(&mut self, retired: &mut Vec<Arc<RenderImage>>) -> bool {
         let mut changed = false;
         while let Ok(response) = self.receiver.try_recv() {
@@ -316,6 +325,7 @@ impl State {
 }
 impl Drop for State {
     fn drop(&mut self) {
+        // 処理中の補間を取り消す。送信側が外れるとワーカーも終了する。
         self.active.store(u64::MAX, Ordering::Relaxed);
     }
 }
@@ -376,7 +386,7 @@ mod tests {
         assert!(state.fallback);
         assert!(!state.pending());
         assert_eq!(retired.len(), 1);
-        // The output limit covers every frame of every image in the set.
+        // 出力の上限は、集合に含まれる全画像の全フレームの合計に適用する。
         assert!(
             state
                 .prepare(

@@ -12,13 +12,15 @@ use std::{
     sync::Arc,
 };
 
-/// GIFへ書き出すフレームの出どころ。静止画以外の形式には先頭画像だけを使う。
+/// GIFへ書き出すフレームの出どころ。GIF以外の形式では、`Viewer.image` の先頭フレーム
+/// （アニメーションなら最初のコマ）だけを使う。
 pub(crate) enum Frames {
     /// 表示中の画像のフレーム（静止画・見開き）。
     Image,
     /// 全フレームを保持したアニメーション。
     Clip(Arc<crate::animation::Clip>),
-    /// 逐次デコード中のアニメーション。元ファイルから順に読み直す（回転、1フレームの上限）。
+    /// 全フレームを保持していないアニメーション（1周目のデコード中・逐次デコード中）。
+    /// 元ファイルから順に読み直す（回転、1フレームの上限）。
     File(PathBuf, u8, u64),
 }
 
@@ -42,7 +44,8 @@ fn png(image: &RenderImage) -> Result<Vec<u8>, String> {
     Ok(output.into_inner())
 }
 type RgbaFrame = Result<(image::RgbaImage, image::Delay), String>;
-/// 先頭からフレームをRGBAと遅延で返す。逐次デコード中のアニメーションも一定のメモリーで書き出す。
+/// 先頭からフレームをRGBAと遅延で返す。逐次デコード中のアニメーションはファイルから
+/// 1フレームずつ読み直すため、全フレームを展開した状態では持たない。
 fn rgba_frames<'a>(
     image: &'a RenderImage,
     frames: &'a Frames,
@@ -67,6 +70,8 @@ fn rgba_frames<'a>(
         ),
     })
 }
+/// 拡張子から形式を決めて保存する。GIFは全フレームを無限ループで、それ以外は先頭フレームを
+/// 書き出す。
 fn save(image: &RenderImage, frames: &Frames, path: &Path) -> Result<(), String> {
     let format = if path
         .extension()
@@ -109,7 +114,8 @@ fn save(image: &RenderImage, frames: &Frames, path: &Path) -> Result<(), String>
         }
         .map_err(|e| e.to_string())?;
     }
-    // Encode fully before touching the destination; a codec error cannot truncate it.
+    // 保存先に触れる前にすべてエンコードし、一時ファイルから置き換える。エンコードや書き込みに
+    // 失敗しても、既存のファイルが途中で切れることはない。
     let parent = path.parent().ok_or(tr!("save-path-invalid"))?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -131,8 +137,8 @@ fn save(image: &RenderImage, frames: &Frames, path: &Path) -> Result<(), String>
     }
     result.map_err(|e| e.to_string())
 }
-// GPUI 0.2.2 advertises only text to other Linux clipboard clients.
-// Use the desktop clipboard tools for the actual image/png MIME payload.
+// GPUI 0.2.2は、Linuxで他のアプリにクリップボードの内容をテキストとしてしか提示しない。
+// image/pngの実データは、デスクトップのクリップボードツール（wl-copy・xclip）で渡す。
 #[cfg(target_os = "linux")]
 fn publish_png(bytes: &[u8]) -> Result<(), String> {
     use std::{
@@ -242,8 +248,8 @@ impl Viewer {
             Some(player) => match player.clip() {
                 Some(clip) => Frames::Clip(clip.clone()),
                 None => {
-                    // The frames were already decoded once for playback; a lower budget
-                    // now (e.g. under memory pressure) must not make the export fail.
+                    // 再生のために一度デコードできたフレームなので、その後に予算が下がっても
+                    // （メモリー逼迫時など）書き出しを失敗させない。
                     let (path, turns) = player.source();
                     Frames::File(path.to_path_buf(), turns, crate::decoder::DEFAULT_LIMIT)
                 }
@@ -384,7 +390,7 @@ mod tests {
     use std::sync::Arc;
     #[test]
     fn exported_png_and_jpeg_have_correct_colors_and_codec_failure_preserves_file() {
-        let data = image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 255, 255])); // BGRA red
+        let data = image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 255, 255])); // BGRAの赤
         let image = Arc::new(RenderImage::new(vec![image::Frame::new(data)]));
         let root = std::env::temp_dir().join(format!("nagame-export-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -462,7 +468,7 @@ mod tests {
             save(&first.image, &frames, &path).unwrap();
             let decoded = crate::decoder::decode(&path, 0).unwrap();
             assert_eq!(decoded.frames.len(), 2, "{name}");
-            // Rotated 90°, original colors (BGRA after decoding) and delays are kept.
+            // 90°回転、元の色（デコード後はBGRA）、遅延が保たれている。
             assert_eq!(decoded.dimensions, [2., 3.], "{name}");
             assert_eq!(
                 decoded.frames[0].buffer().get_pixel(0, 0).0,

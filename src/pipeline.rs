@@ -1,4 +1,5 @@
-//! デコード済み画像の予算連動LRU、単一のワーカー、アニメーションの逐次デコードの開始、近隣の先読み。
+//! デコード済み画像の予算連動LRU、単一のワーカー、アニメーションの逐次デコードの開始、
+//! 前後の画像の先読み。
 use crate::animation::{self, Clip, Stream};
 use crate::decoder;
 use crate::i18n::tr;
@@ -16,6 +17,7 @@ use std::{
 };
 /// 予算とは別に、キャッシュの項目数も制限する。
 const CACHE_ENTRIES: usize = 8;
+/// キャッシュのキー。更新日時か大きさが変わったファイルは、別の画像として読み直す。
 #[derive(Clone, PartialEq, Eq)]
 struct Key {
     path: PathBuf,
@@ -56,6 +58,7 @@ pub enum Motion {
     Clip(Arc<Clip>),
     Stream(Arc<Stream>),
 }
+/// pathとturnsは、保存と逐次デコードへの切り替えで元ファイルを読み直すために持つ。
 pub struct Animation {
     pub path: PathBuf,
     pub turns: u8,
@@ -120,7 +123,9 @@ pub struct Request {
 pub struct Response {
     pub generation: u64,
     pub result: Result<Arc<Loaded>, String>,
+    /// ワーカーが要求を取り出してから応答するまでの時間（NAGAME_PROFILEのログ用）。
     pub elapsed_ms: u128,
+    /// キャッシュから返した。
     pub cached: bool,
 }
 enum Message {
@@ -133,6 +138,7 @@ enum Message {
 /// 全フレームを保持できたアニメーションのキャッシュ登録。デコードスレッドから届き、
 /// ワーカーが次のメッセージを処理するときに反映する。
 type Stored = (Key, Arc<Loaded>);
+/// ワーカーへの送り口。世代が変わると、古い要求の処理と先読みを打ち切らせる。
 pub struct Loader {
     sender: mpsc::Sender<Message>,
     active: Arc<AtomicU64>,
@@ -159,6 +165,7 @@ impl Drop for Loader {
         self.active.store(u64::MAX, Ordering::Relaxed);
     }
 }
+/// デコード済み画像のLRU（後ろほど新しい）。容量は予算と台帳から決め、項目数も制限する。
 struct Cache {
     entries: VecDeque<(Key, Arc<Loaded>)>,
     ledger: Arc<Ledger>,
@@ -225,6 +232,7 @@ impl Cache {
             memory::release_free_memory();
         }
     }
+    /// 入れた項目を残し、容量と項目数に収まるまで他の項目を追い出す。容量を超える画像は入れない。
     fn insert(&mut self, key: Key, value: Arc<Loaded>, budget: &Budget) {
         let before = self.bytes();
         if let Some(i) = self.entries.iter().position(|(k, _)| k == &key) {
@@ -243,8 +251,8 @@ impl Cache {
     fn trim(&mut self, budget: &Budget, aggressive: bool) {
         let before = self.bytes();
         if aggressive {
-            // A clip whose player streams again still shows its first chunk; keep only
-            // entries whose every image is on screen.
+            // 逐次デコードへ移ったアニメーションでも、Clipの先頭チャンクは表示中のまま。
+            // 一部でも表示中なら残すとClip全体が残るため、すべての画像が表示中の項目だけを残す。
             let entries = std::mem::take(&mut self.entries);
             self.entries = entries
                 .into_iter()
@@ -256,6 +264,8 @@ impl Cache {
         self.publish(before);
     }
 }
+/// 見開きの2ページを1枚に合成する（rtlなら右から読む順）。secondが横長（landscape_single）
+/// のときや、合成すると上限を超えるときはfirstだけを返す。
 fn compose(
     first: &Arc<Loaded>,
     second: &Arc<Loaded>,
@@ -292,6 +302,7 @@ fn compose(
     Arc::get_mut(&mut result).unwrap().pages = 2;
     Ok(result)
 }
+/// 静止画と見開きの合成結果に追加回転を反映する。GIFのアニメーションはデコーダーが回転する。
 fn rotate(page: &Arc<Loaded>, turns: u8) -> Result<Arc<Loaded>, String> {
     if turns.is_multiple_of(4) {
         return Ok(page.clone());
@@ -342,7 +353,7 @@ fn open_animation(
     if let Some(watch) = previous.take()
         && !watch.wait_stopped(&cancelled)
     {
-        // Still decoding: wait for it again on the next request instead of overlapping.
+        // まだデコード中。重ねて始めず、次の要求でもう一度待つ。
         *previous = Some(watch);
         return None;
     }
@@ -395,6 +406,8 @@ fn open_animation(
     }))
 }
 
+/// 読み込みワーカーを起動する。溜まった要求は最新のものだけを処理し、応答の後に前後の画像を
+/// 先読みする。キャッシュの保持量はledgerへ記録する。
 pub fn worker(ledger: Arc<Ledger>) -> (Loader, mpsc::Receiver<Response>) {
     let (sender, input) = mpsc::channel::<Message>();
     let (store, stored) = mpsc::channel::<Stored>();
@@ -513,7 +526,7 @@ pub fn worker(ledger: Arc<Ledger>) -> (Loader, mpsc::Receiver<Response>) {
                 if cancelled() || memory::under_pressure() {
                     break;
                 }
-                // Animations are not prefetched: they are decoded while they play.
+                // アニメーションは先読みしない。再生しながらデコードする。
                 if decoder::is_gif(&path) {
                     continue;
                 }
@@ -599,7 +612,7 @@ mod memory_tests {
                 &budget,
             );
         }
-        // The same image under a second key (e.g. a spread that fell back to one page).
+        // 同じ画像を別のキーでも持つ（例えば単独表示に戻った見開き）。
         cache.insert(
             Key::new("/missing/alias.png".into(), 0),
             images[2].clone(),
@@ -608,7 +621,7 @@ mod memory_tests {
         assert_eq!(cache.entries.len(), 4);
         assert_eq!(cache.bytes(), 3 * mib4);
         assert_eq!(ledger.held(), 3 * mib4);
-        // The viewer now holds something big that the cache does not have.
+        // キャッシュにない大きな画像をViewerが持つ。
         let other = still(1, 1);
         ledger.replace(
             Holder::Viewer,
@@ -633,8 +646,8 @@ mod memory_tests {
                 .all(|(_, l)| Arc::ptr_eq(l, &images[2])),
             "aggressive trim keeps only what the viewer shows"
         );
-        // An image the viewer already holds is not counted twice when it is inserted.
-        // 68 MiB: double counting would leave only 60 MiB of a 128 MiB budget.
+        // Viewerが持つ画像をキャッシュへ入れても、二重には数えない。
+        // 68 MiBなので、二重に数えると128 MiBの予算に60 MiBしか残らず、入らなくなる。
         let big = still(4096, 4352);
         ledger.replace(Holder::Viewer, [(big.image.id, big.bytes)]);
         cache.insert(Key::new("/missing/big.png".into(), 0), big.clone(), &budget);
@@ -719,7 +732,7 @@ mod memory_tests {
         let spread = receive().result.unwrap();
         assert_eq!(spread.pages, 2);
         assert!(spread.animation.is_none());
-        // LTR: page.png on the left, the GIF's first (red) frame on the right, as BGRA.
+        // 左から右へ読む順なので、左がpage.png、右がGIFの先頭（赤）フレーム。BGRAで比べる。
         assert_eq!(
             &spread.image.as_bytes(0).unwrap()[16..20],
             &[0, 0, 255, 255]

@@ -1,6 +1,9 @@
+//! GUIを起動せずに、ヘッダーの読み取りと全フレームのデコードにかかる時間を測る。
+//! `cargo run --locked --bin decode-bench -- 画像...`。デコードに失敗したら、残りの画像は
+//! 測らずに終了コード1で終わる。
 #[path = "../decoder.rs"]
 mod decoder;
-// The benchmark shares decoder errors, but does not use the UI localization helpers.
+// ベンチマークはデコーダーのエラー文を共有するが、UI向けの翻訳ヘルパーは使わない。
 #[allow(dead_code)]
 #[path = "../i18n.rs"]
 mod i18n;

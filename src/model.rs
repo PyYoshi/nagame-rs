@@ -9,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// 拡張子から、一覧に含める対応形式か判定する。
 pub fn supported(path: &Path) -> bool {
     path.extension().and_then(|s| s.to_str()).is_some_and(|s| {
         matches!(
@@ -31,7 +32,8 @@ pub fn supported(path: &Path) -> bool {
     })
 }
 
-// Compare digit runs by magnitude, without parsing into an integer (no overflow).
+/// 自然順の比較。大文字小文字を区別せず、数字の並びは先頭の0を除いた桁数と文字で比べる
+/// （整数に変換しないので桁あふれしない）。同順なら元の文字列で決める。
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     let a_lower = a.to_lowercase();
     let b_lower = b.to_lowercase();
@@ -66,6 +68,7 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
         .then_with(|| a.cmp(b))
 }
 
+/// 1つのフォルダにある対応画像の一覧と、表示中の位置。
 #[derive(Default, Clone)]
 pub struct Album {
     pub directory: PathBuf,
@@ -74,6 +77,7 @@ pub struct Album {
 }
 
 impl Album {
+    /// ファイルならそのフォルダを開いてそのファイルを選び、フォルダなら先頭を選ぶ。並びは自然順。
     pub fn open(path: &Path) -> Result<Self, String> {
         let path = path.canonicalize().map_err(|e| e.to_string())?;
         if !path.is_dir() && !supported(&path) {
@@ -108,6 +112,7 @@ impl Album {
         })
     }
 
+    /// 設定の並び順に並べ替える。表示中の画像は選んだままにする。
     pub fn sort(&mut self, settings: &Settings) {
         let selected = self.current().map(PathBuf::from);
         let mut items: Vec<_> = std::mem::take(&mut self.paths)
@@ -169,6 +174,7 @@ impl Album {
             .unwrap_or(0);
     }
 
+    /// 先読みする次と前の画像。端では反対側へ回り込む。
     pub fn neighbours(&self) -> Vec<PathBuf> {
         if self.paths.len() < 2 {
             return vec![];
@@ -183,6 +189,9 @@ impl Album {
             .collect()
     }
 
+    /// 前後のフォルダを開く。adjacentなら同じ階層の隣のフォルダ（画像がなくてもよい）、
+    /// そうでなければサブフォルダを含む深さ優先の順で、次に画像があるフォルダ。
+    /// 並べ替えと選択位置は呼び出し側が決め直す。
     pub fn folder(&self, direction: isize, adjacent: bool) -> Result<Self, String> {
         let mut directory = self.directory.clone();
         for _ in 0..4096 {
@@ -269,11 +278,14 @@ fn next_directory(directory: &Path, direction: isize, adjacent: bool) -> Option<
     }
 }
 
+/// 表示倍率とパン。fitならウィンドウに合わせ、そうでなければzoomを使う。
 #[derive(Clone, Copy, Debug)]
 pub struct Viewport {
     pub fit: bool,
     pub zoom: f32,
+    /// fitのとき、元の大きさより拡大するか。
     pub fit_upscale: bool,
+    /// 画面中央からの画像のずれ（論理ピクセル）。
     pub pan: [f32; 2],
 }
 
@@ -289,6 +301,7 @@ impl Default for Viewport {
 }
 
 impl Viewport {
+    /// 表示倍率。fitならareaに収まる倍率（fit_upscaleでなければ等倍まで）。
     pub fn scale(&self, image: [f32; 2], area: [f32; 2]) -> f32 {
         if self.fit {
             (area[0] / image[0].max(1.0))
@@ -299,6 +312,7 @@ impl Viewport {
         }
     }
 
+    /// 現在の倍率にfactorを掛けて手動倍率にする（0.01〜32倍）。画面中央の位置を保つ。
     pub fn zoom_by(&mut self, factor: f32, image: [f32; 2], area: [f32; 2]) {
         let old = self.scale(image, area);
         self.zoom = (old * factor).clamp(0.01, 32.0);
@@ -309,6 +323,7 @@ impl Viewport {
         self.clamp(image, area);
     }
 
+    /// 画像が画面からはみ出す分だけパンできるよう制限する。収まる向きは中央に置く。
     pub fn clamp(&mut self, image: [f32; 2], area: [f32; 2]) {
         let scale = self.scale(image, area);
         for i in 0..2 {

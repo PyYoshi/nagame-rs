@@ -1,5 +1,5 @@
-# Keep the built-in detection rules; skip generated files and local tool state.
-# Pass this file explicitly with --config (Betterleaks v1.10.0).
+# 組み込みの検出規則はそのまま使い、生成物とローカルのツールの状態だけを除く。
+# このファイルは --config で明示して渡す（Betterleaks v1.10.0）。
 title = "Nagame secret scanning"
 prefilter = '''
 filter.matchesAny(attributes["path"], [

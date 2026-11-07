@@ -1,6 +1,5 @@
-//! 設定一覧のスクロールバー。ScrollHandleとバーの位置を相互変換する。
-
-//! Always-visible settings scrollbar. Geometry is read at paint time, after layout.
+//! 設定一覧の常に表示するスクロールバー。ScrollHandleとバーの位置を相互変換する。
+//! 寸法はレイアウト後の描画時に読む。
 use crate::Viewer;
 use gpui::{prelude::*, *};
 

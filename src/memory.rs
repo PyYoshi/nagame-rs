@@ -1,4 +1,4 @@
-//! 画素データのメモリ予算、保持量の台帳、メモリ逼迫の検知、glibcの返却設定。
+//! 画素データのメモリー予算、保持量の台帳、メモリー逼迫の検知、glibcの返却設定。
 //! 予算は設定（自動／上限指定）を基本とし、OSの空き容量と逼迫通知では下げる方向にだけ使う。
 
 use gpui::ImageId;
@@ -13,23 +13,25 @@ use std::{
 };
 
 pub const MIB: u64 = 1024 * 1024;
-/// 以前の固定上限。予算が小さくても、単体の画像やGIFはこの大きさまで扱う。
+/// 予算の下限。設定や逼迫で予算を下げても、1枚の画像と全フレームを保持するGIFは
+/// この大きさまで扱う。以前の固定上限と同じ値。
 pub const FLOOR: u64 = 128 * MIB;
 /// 1辺16,384ピクセルのRGBA。単体画像はこれを超えない。
 const STILL_MAX: u64 = 16384 * 16384 * 4;
 /// 全フレームを保持するアニメーションは、同じ量をGPUアトラスにも載せる。
-/// GPUIからVRAMの残量を取得できないため、空きメモリが多くてもこの量で止める。
+/// GPUIからVRAMの残量を取得できないため、空きメモリーが多くてもこの量で止める。
 const RESIDENT_MAX: u64 = 1024 * MIB;
+/// 自動予算（RAMの1/8）の範囲。
 const AUTO_MIN: u64 = 256 * MIB;
 const AUTO_MAX: u64 = 2048 * MIB;
-/// メモリ情報を取得できない環境の自動予算。
+/// メモリー情報を取得できない環境の自動予算。
 const AUTO_UNKNOWN: u64 = 1024 * MIB;
 /// 逼迫通知の後、この時間は予算を下げたままにする。
 pub const PRESSURE_HOLD: Duration = Duration::from_secs(30);
 /// 設定画面で選べる上限（MiB）。0は自動。
 pub const LIMIT_CHOICES: [u32; 7] = [0, 256, 512, 1024, 2048, 4096, 8192];
 
-/// 用途ごとの上限。totalから導き、どれもFLOOR未満にはしない。
+/// 用途ごとの上限。totalから導く。ahead（32 MiB以上）を除き、FLOOR未満にはしない。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budget {
     /// キャッシュ・表示中の画像・アニメーション・補間結果を合わせた保持量の目標。
@@ -56,13 +58,17 @@ impl Budget {
     }
 }
 
-/// OSが報告するメモリ量。cgroupは祖先を含めて最も厳しい制限を使う。
+/// OSが報告するメモリー量。cgroupは祖先を含めて最も厳しい制限を使う。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct System {
+    /// MemTotal。
     pub total: u64,
+    /// MemAvailable。
     pub available: u64,
-    /// cgroupの残り（memory.max − memory.current）。制限がなければNone。
+    /// cgroupの残り。memory.maxから、回収できるページキャッシュ（inactive_file）を除いた
+    /// memory.currentを引いた量で、祖先を含めて最も少ない値。制限がなければNone。
     pub cgroup_headroom: Option<u64>,
+    /// 祖先を含めて最も小さいmemory.max。制限がなければNone。
     pub cgroup_limit: Option<u64>,
 }
 impl System {
@@ -107,8 +113,8 @@ fn cgroup_limits(directory: &Path, root: &Path) -> (Option<u64>, Option<u64>) {
         if let Some(max) = read("memory.max").and_then(|v| v.trim().parse::<u64>().ok()) {
             limit = Some(limit.map_or(max, |l| l.min(max)));
             if let Some(used) = read("memory.current").and_then(|v| v.trim().parse::<u64>().ok()) {
-                // memory.current includes page cache the kernel reclaims under the limit;
-                // browsing many image files would otherwise look like a full cgroup.
+                // memory.currentには、制限に近づくとカーネルが回収するページキャッシュも含まれる。
+                // 除かないと、多くの画像ファイルを見ただけでcgroupが満杯に見える。
                 let reclaimable = read("memory.stat")
                     .and_then(|stat| {
                         stat.lines()
@@ -128,6 +134,7 @@ fn cgroup_limits(directory: &Path, root: &Path) -> (Option<u64>, Option<u64>) {
     (limit, headroom)
 }
 
+/// 現在のメモリー量。`/proc/meminfo` を読めなければNone。
 pub fn system() -> Option<System> {
     let (total, available) = parse_meminfo(&std::fs::read_to_string("/proc/meminfo").ok()?)?;
     let root = Path::new("/sys/fs/cgroup");
@@ -144,7 +151,8 @@ pub fn system() -> Option<System> {
     })
 }
 
-/// 設定の上限（MiB、0は自動）から基本の予算を決める。
+/// 設定の上限（MiB、0は自動）から基本の予算を決める。自動はRAM（cgroupの制限を含む）の
+/// 1/8を256 MiB〜2 GiBに収めた値。
 pub fn base_total(limit_mib: u32, system: Option<&System>) -> u64 {
     if limit_mib > 0 {
         return u64::from(limit_mib) * MIB;
@@ -180,7 +188,8 @@ pub fn override_budget(budget: Option<Budget>) {
     *OVERRIDE.lock().unwrap() = budget;
 }
 
-/// OSのメモリー情報。ストリーミング中はチャンクごとに予算を見直すため、0.5秒は再利用する。
+/// OSのメモリー情報。逐次デコード中はチャンクが変わるたびに予算を求め直すため、
+/// 0.5秒は同じ値を使う。
 fn recent_system() -> Option<System> {
     static RECENT: Mutex<Option<(Instant, Option<System>)>> = Mutex::new(None);
     let mut recent = RECENT.lock().unwrap();
@@ -210,6 +219,7 @@ pub fn current(held: u64) -> Budget {
     ))
 }
 
+/// 台帳上の画像の持ち主。ビットで表し、同じ画像を両方が持てる。
 #[derive(Clone, Copy)]
 pub enum Holder {
     Cache = 1,
@@ -235,6 +245,7 @@ impl Ledger {
             entries.entry(id).or_insert((bytes, 0)).1 |= bit;
         }
     }
+    /// holderがidの画像を保持しているか。
     pub fn holds(&self, holder: Holder, id: ImageId) -> bool {
         self.entries
             .lock()
@@ -242,15 +253,16 @@ impl Ledger {
             .get(&id)
             .is_some_and(|(_, holders)| holders & holder as u8 != 0)
     }
+    /// 保持中の画像の合計。
     pub fn held(&self) -> u64 {
         self.entries.lock().unwrap().values().map(|(b, _)| b).sum()
     }
-    /// holderが保持していない画像の合計。キャッシュの容量計算に使う。
+    /// holderが保持していない画像の合計。
     #[cfg(test)]
     pub fn outside(&self, holder: Holder) -> u64 {
         self.outside_except(holder, &std::collections::HashSet::new())
     }
-    /// outsideから、exceptの画像を除いた合計。
+    /// holderが保持していない画像のうち、exceptを除いた合計。キャッシュの容量計算に使う。
     pub fn outside_except(
         &self,
         holder: Holder,
@@ -267,6 +279,7 @@ impl Ledger {
     }
 }
 
+/// 画像の全フレームの画素データの容量。
 pub fn image_bytes(image: &gpui::RenderImage) -> u64 {
     (0..image.frame_count())
         .filter_map(|i| image.as_bytes(i))
@@ -277,14 +290,16 @@ pub fn image_bytes(image: &gpui::RenderImage) -> u64 {
 static PRESSURE_EVENTS: AtomicU64 = AtomicU64::new(0);
 static PRESSURE_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// メモリ逼迫を記録する。監視スレッドと実ウィンドウテストから呼ぶ。
+/// メモリー逼迫を記録する。監視スレッドと実ウィンドウテストから呼ぶ。
 pub fn signal_pressure() {
     *PRESSURE_AT.lock().unwrap() = Some(Instant::now());
     PRESSURE_EVENTS.fetch_add(1, Ordering::Relaxed);
 }
+/// これまでの逼迫の回数。Viewerは増えたら対応する。
 pub fn pressure_events() -> u64 {
     PRESSURE_EVENTS.load(Ordering::Relaxed)
 }
+/// 最後の逼迫から `PRESSURE_HOLD` が経っていない。
 pub fn under_pressure() -> bool {
     PRESSURE_AT
         .lock()
@@ -293,7 +308,8 @@ pub fn under_pressure() -> bool {
 }
 
 /// 逼迫とみなすか。PSIの停止通知（psi）は他のプロセスのスワップ読み戻しなどでも届くため、
-/// 空き容量が少ない場合だけ採用する（RAMの10%未満）。通知がなくても5%を下回れば逼迫とする。
+/// 空き容量がRAMの10%と512 MiBの大きい方を下回る場合だけ採用する。通知がなくても、
+/// RAMの5%と256 MiBの大きい方を下回れば逼迫とする。
 fn pressing(system: &System, psi: bool) -> bool {
     let (share, floor) = if psi {
         (10, 512 * MIB)
@@ -303,13 +319,14 @@ fn pressing(system: &System, psi: bool) -> bool {
     system.headroom() < (system.ram() / share).max(floor)
 }
 
+/// 空き容量を確かめ、逼迫なら記録する。
 fn check(psi: bool) {
     if system().is_some_and(|s| pressing(&s, psi)) {
         signal_pressure();
     }
 }
 
-/// メモリ逼迫の監視を一度だけ開始する。PSIのトリガー（150ms／2秒の停止）を待ちながら、
+/// メモリー逼迫の監視を一度だけ開始する。PSIのトリガー（2秒間に150msの停止）を待ちながら、
 /// 2秒ごとに空き容量も確認する。PSIを使えない環境では空き容量の確認だけを行う。
 pub fn start_monitor() {
     static STARTED: OnceLock<()> = OnceLock::new();
@@ -318,9 +335,7 @@ pub fn start_monitor() {
             .name("nagame-memory".into())
             .spawn(|| {
                 #[cfg(target_os = "linux")]
-                if psi::watch(check) {
-                    return;
-                }
+                psi::watch(check);
                 loop {
                     check(false);
                     std::thread::sleep(Duration::from_secs(2));
@@ -351,9 +366,10 @@ mod psi {
         files
     }
 
-    /// トリガーを登録できれば、通知（true）と2秒ごとの確認（false）でcheckを呼び続ける。
-    /// どこにも登録できなければfalseを返す。
-    pub fn watch(check: fn(bool)) -> bool {
+    /// トリガーを登録できたファイルで、通知（true）と2秒ごとの確認（false）のたびにcheckを呼ぶ。
+    /// 監視できる間は戻らない。pollが失敗したら次のファイルを試し、どれも使えなければ戻る
+    /// （呼び出し側は空き容量の確認だけに切り替える）。
+    pub fn watch(check: fn(bool)) {
         for path in files() {
             let Ok(mut file) = std::fs::OpenOptions::new()
                 .read(true)
@@ -386,7 +402,6 @@ mod psi {
                 check(poll.revents & libc::POLLPRI != 0);
             }
         }
-        false
     }
 }
 
@@ -395,7 +410,7 @@ mod psi {
 /// 閾値を固定して、1 MiB以上の画素バッファを解放時にOSへ返す。
 pub fn tune_allocator() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    // SAFETY: mallopt is called once at startup before other threads allocate.
+    // SAFETY: 起動直後、他のスレッドが確保を始める前に一度だけ呼ぶ。
     unsafe {
         libc::mallopt(libc::M_MMAP_THRESHOLD, 1 << 20);
     }
@@ -404,7 +419,7 @@ pub fn tune_allocator() {
 /// 1 MiB未満の画素バッファが残したヒープの空きをOSへ返す。
 pub fn release_free_memory() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    // SAFETY: malloc_trim has no preconditions.
+    // SAFETY: malloc_trimに前提条件はない。
     unsafe {
         libc::malloc_trim(0);
     }
@@ -452,7 +467,7 @@ mod tests {
             available: 600 * MIB,
             ..roomy
         };
-        // Our own 500 MiB is not part of MemAvailable, so it is added back.
+        // 自分が持つ500 MiBはMemAvailableに含まれないため、足し戻す。
         assert_eq!(
             effective_total(AUTO_MAX, Some(&tight), 500 * MIB, false),
             800 * MIB
@@ -466,8 +481,8 @@ mod tests {
         assert_eq!(effective_total(AUTO_MAX, Some(&container), 0, false), FLOOR);
         assert!(pressing(&container, false));
         assert!(!pressing(&roomy, true));
-        // A PSI stall alone is not enough while memory is plentiful (for example another
-        // process swapping in); with little headroom left it is.
+        // 空き容量が十分なら、PSIの停止通知だけでは逼迫としない（他のプロセスのスワップ
+        // 読み戻しなど）。空き容量が少なければ逼迫とする。
         let low = System {
             available: 4 * 1024 * MIB,
             ..roomy
@@ -502,7 +517,7 @@ mod tests {
         std::fs::write(child.join("memory.max"), "max\n").unwrap();
         std::fs::write(child.join("memory.current"), "10\n").unwrap();
         assert_eq!(cgroup_limits(&child, &root), (Some(1000), Some(100)));
-        // Reclaimable page cache does not count as used.
+        // 回収できるページキャッシュは使用量に数えない。
         std::fs::write(
             root.join("parent/memory.stat"),
             "anon 500\ninactive_file 300\nactive_file 100\n",

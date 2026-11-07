@@ -1,10 +1,11 @@
-//! Fluent-backed messages embedded in every build, including the decoder benchmark.
-//! Follow the primary OS language (Japanese, otherwise English) unless overridden.
+//! Fluentのメッセージ。デコーダーのベンチマークを含む全ビルドに埋め込む。
+//! 言語は保存した手動指定を優先し、なければOSの主言語（日本語なら日本語、それ以外は英語）に従う。
 
 use i18n_embed::{LanguageLoader, fluent::FluentLanguageLoader};
 use rust_embed::RustEmbed;
 use std::sync::LazyLock;
 
+/// 表示言語の設定値。Systemは `resolved` でOSの主言語に置き換える。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Language {
     #[default]
@@ -72,7 +73,7 @@ pub(crate) fn loader() -> &'static FluentLanguageLoader {
     &LOADER
 }
 
-/// Apply only a saved locale; editing the settings draft must not call this.
+/// 保存済みの言語を適用する。設定画面で編集中の値で呼ばない（保存前に表示言語が変わってしまう）。
 pub fn activate(language: Language) {
     loader()
         .load_languages(
@@ -82,7 +83,7 @@ pub fn activate(language: Language) {
         .expect("embedded locale must be available");
 }
 
-// Keep literal keys and named arguments visible to the compile-time validator.
+// キーと名前付き引数をリテラルのまま渡し、fl!のコンパイル時検証の対象にする。
 macro_rules! tr {
     ($id:literal $(, $($args:tt)*)?) => {
         i18n_embed_fl::fl!($crate::i18n::loader(), $id $(, $($args)*)?)
@@ -90,7 +91,7 @@ macro_rules! tr {
 }
 pub(crate) use tr;
 
-/// Source metadata and display geometry, kept separate from translated prose.
+/// 情報画面に出す元ファイルの情報と表示寸法。数値は翻訳文と分けて渡す。
 pub struct ImageInformation<'a> {
     pub path: &'a std::path::Path,
     pub format: &'a str,
@@ -102,6 +103,7 @@ pub struct ImageInformation<'a> {
     pub pages: usize,
 }
 
+/// ステータスバーに出す、表示中の画像の状態。
 pub struct ImageStatus<'a> {
     pub page_range: &'a str,
     pub total: usize,
@@ -271,10 +273,11 @@ mod tests {
                 }
             }
 
-            // fl! validates named arguments, but accepts omitting all arguments.
-            // Check every no-argument call against the actual resource to cover that gap.
+            // fl!は名前付き引数を検証するが、引数をすべて省略した呼び出しは通してしまう。
+            // その穴を埋めるため、列挙したファイルの引数なしの呼び出しを実際のリソースで確認する。
             for source in [
                 include_str!("main.rs"),
+                include_str!("animation.rs"),
                 include_str!("bindings.rs"),
                 include_str!("decoder.rs"),
                 include_str!("menu_ui.rs"),
@@ -283,7 +286,9 @@ mod tests {
                 include_str!("resample.rs"),
                 include_str!("settings.rs"),
                 include_str!("settings_ui.rs"),
+                include_str!("ui_smoke.rs"),
                 include_str!("viewer_io.rs"),
+                include_str!("window_state.rs"),
             ] {
                 for call in source.split("tr!(").skip(1) {
                     let Some(call) = call.trim_start().strip_prefix('"') else {

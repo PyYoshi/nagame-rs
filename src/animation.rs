@@ -19,6 +19,8 @@ const CHUNK_FRAMES: usize = 16;
 const CHUNK_BYTES: u64 = 16 * 1024 * 1024;
 /// 逐次デコードで、時間・容量の目標に関係なく先に用意するフレーム数。
 const MIN_AHEAD_FRAMES: usize = 2;
+/// 逐次デコードで先に用意する再生時間（先読み時間）の下限・初期値・上限。
+/// 先読み不足が起きるたびに1.5倍にし、不足のないまま `RELAX_AFTER` が過ぎるたびに0.8倍に減らす。
 const TARGET_MIN: Duration = Duration::from_millis(500);
 const TARGET_START: Duration = Duration::from_secs(1);
 const TARGET_MAX: Duration = Duration::from_secs(2);
@@ -40,7 +42,9 @@ pub struct Chunk {
     pub image: Arc<RenderImage>,
     /// 先頭フレームの通し番号。ループしても増え続ける。
     pub seq: u64,
+    /// 画素データの容量。
     pub bytes: u64,
+    /// 再生に使う各フレームの遅延（`playback_delay` を適用済み）。
     delays: Vec<Duration>,
 }
 impl Chunk {
@@ -54,7 +58,9 @@ pub struct Clip {
     pub chunks: Vec<Arc<Chunk>>,
     /// chunksと同じ順の画像。表示補間と保存に使う。
     pub images: Vec<Arc<RenderImage>>,
+    /// 1ループのフレーム数。
     pub frames: usize,
+    /// 全チャンクの容量。
     pub bytes: u64,
 }
 impl Clip {
@@ -68,11 +74,14 @@ impl Clip {
     }
 }
 
-/// フレーム単体、全フレーム保持、先読みの上限。
+/// デコードの上限。`memory::Budget` から取る。
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
+    /// 1フレームの展開上限。
     pub frame: u64,
+    /// 全フレームを保持する上限。超えたら逐次デコードへ移る。
     pub resident: u64,
+    /// 再生位置より先に保持する量の上限。
     pub ahead: u64,
 }
 
@@ -87,17 +96,26 @@ pub struct Resume {
     pub frames: Option<usize>,
 }
 
+/// デコードスレッドとPlayerが共有する状態。
 struct State {
+    /// 公開済みで、Playerがまだ受け取っていないチャンク。
     ready: VecDeque<Arc<Chunk>>,
+    /// 全フレームを保持できたときのClip。
     clip: Option<Arc<Clip>>,
+    /// 1ループのフレーム数。1周目を読み終えるまでは分からない（逐次デコードへの再開時は既知）。
     frames: Option<usize>,
+    /// 逐次デコードへ移った。
     streaming: bool,
+    /// もうチャンクは届かない（全フレームの保持、致命的なエラー、1フレームだけの逐次デコード）。
     finished: bool,
     error: Option<String>,
     /// 画面に出ているフレームの通し番号（Player → デコーダー）。
     playing: u64,
+    /// 先読み時間の目標（Player → デコーダー）。
     target: Duration,
+    /// メモリー逼迫中。先読みを最小にし、全フレーム保持の試みもやめる。
     low_memory: bool,
+    /// 停止の要求（Streamの最後の参照が外れた）。
     stop: bool,
     /// デコードスレッドが終了した。
     exited: bool,
@@ -148,7 +166,7 @@ impl Stream {
         std::thread::Builder::new()
             .name("nagame-animation".into())
             .spawn(move || {
-                /// Records the exit even if decoding panics.
+                /// デコード中にパニックしても、終了を記録する。
                 struct Exit(Arc<Shared>);
                 impl Drop for Exit {
                     fn drop(&mut self) {
@@ -226,19 +244,23 @@ impl Watch {
     }
 }
 
+/// デコードスレッド側の状態。デコードしたフレームを保留し、チャンクにまとめて公開する。
 struct Decoder {
     shared: Arc<Shared>,
     limits: Limits,
     resume: Resume,
     streaming: bool,
+    /// 次に公開するフレームの通し番号。
     seq: u64,
     /// 全フレーム保持の候補。逐次デコードへ移ったら捨てる。
     kept: Vec<Arc<Chunk>>,
     kept_bytes: u64,
     /// 公開済みで、まだ画面に出ていないフレーム（通し番号、遅延、容量）。
     unplayed: VecDeque<(u64, Duration, u64)>,
+    /// デコード済みで、まだチャンクにしていないフレーム。
     pending: Vec<Frame>,
     pending_bytes: u64,
+    /// 次のチャンクのフレーム数の上限。1から倍々に増やし、最初のフレームを早く見せる。
     chunk_limit: usize,
     /// 先読みを目標まで補充中か。満たしたら目標の半分を下回るまで休み、まとめて補充する。
     filling: bool,
@@ -273,6 +295,8 @@ impl Decoder {
         self.shared.wake.notify_all();
     }
 
+    /// ファイルを先頭から読み、逐次デコードならループごとに読み直す。
+    /// 全フレームを保持できたら1周で終える。
     fn run(mut self, path: &std::path::Path, turns: u8, stored: impl FnOnce(Arc<Clip>)) {
         let mut skip = self.resume.frame;
         let mut first_lap = true;
@@ -288,7 +312,7 @@ impl Decoder {
                 }
                 let frame = match frame {
                     Ok(frame) => frame,
-                    // A broken tail ends the loop where decoding stopped, like browsers do.
+                    // 途中で壊れていたら、ブラウザと同じく読めたところでループを終える。
                     Err(error) if count > 0 => {
                         self.shared.state.lock().unwrap().error = Some(error);
                         break;
@@ -313,7 +337,8 @@ impl Decoder {
             }
             if !self.streaming {
                 let clip = Arc::new(Clip::new(std::mem::take(&mut self.kept)));
-                // Store first: once the player sees the clip it asks the cache to recount.
+                // 先にキャッシュへ登録する。ViewerはClipを受け取ると台帳を更新し、
+                // キャッシュに数え直しを求めるため。
                 stored(clip.clone());
                 let mut state = self.shared.state.lock().unwrap();
                 state.clip = Some(clip);
@@ -323,7 +348,7 @@ impl Decoder {
                 return;
             }
             if first_lap && count == 1 {
-                // A single frame larger than the resident limit: nothing to loop.
+                // 全フレーム保持の上限より大きい1フレームだけの画像。繰り返すものがない。
                 self.shared.state.lock().unwrap().finished = true;
                 self.shared.wake.notify_all();
                 return;
@@ -351,9 +376,9 @@ impl Decoder {
         if self.pending.len() >= self.chunk_limit.min(per_chunk) || self.running_low() {
             self.publish();
         }
-        // Small animations decode at full speed. Past the lookahead size, even a resident
-        // attempt stays within `ahead` of playback, so a later switch to streaming leaves
-        // at most that much unplayed.
+        // 小さなアニメーションは全速でデコードする。先読みの上限を超えたら、全フレーム保持の
+        // 試み中でも再生位置からahead以内にとどめる。後で逐次デコードへ移っても、未再生の
+        // フレームはその量までしか残らない。
         if self.streaming || self.kept_bytes + self.pending_bytes > self.limits.ahead {
             return self.wait_for_room(bytes);
         }
@@ -374,6 +399,8 @@ impl Decoder {
             || self.unplayed.iter().map(|(_, d, _)| *d).sum::<Duration>() < TARGET_MIN / 2
     }
 
+    /// 先読みに空きができるまで待つ。nextは次のフレームの容量の見込み（GIFのフレームは
+    /// キャンバス全体の大きさなので、直前のフレームと同じとみなす）。停止を求められたらfalse。
     fn wait_for_room(&mut self, next: u64) -> bool {
         let mut state = self.shared.state.lock().unwrap();
         loop {
@@ -390,14 +417,14 @@ impl Decoder {
             }
             let frames = self.unplayed.len() + self.pending.len();
             let bytes = self.pending_bytes + self.unplayed.iter().map(|(.., b)| b).sum::<u64>();
-            // Waking for every played frame decodes one frame at a time on a cold, slow core.
-            // Refill in batches instead: after reaching the target, resume below half of it.
+            // フレームを再生するたびに起きると、クロックの下がったコアで1フレームずつデコード
+            // することになる。目標に達したら半分を下回るまで休み、まとめて補充する。
             let (target, ahead) = if self.filling {
                 (state.target, self.limits.ahead)
             } else {
                 (state.target / 2, self.limits.ahead / 2)
             };
-            // The time target only paces streaming; a resident attempt is bounded by bytes.
+            // 時間の目標は逐次デコードだけに使う。全フレーム保持の試みは容量で制限する。
             let time_ok = !self.streaming || {
                 let pending: Duration =
                     self.pending.iter().map(|f| playback_delay(f.delay())).sum();
@@ -410,7 +437,7 @@ impl Decoder {
                 return true;
             }
             if !self.pending.is_empty() {
-                // Never sleep on decoded frames the player cannot see yet.
+                // Playerにまだ見えないデコード済みのフレームを抱えたまま待たない。
                 drop(state);
                 self.publish();
                 state = self.shared.state.lock().unwrap();
@@ -425,6 +452,7 @@ impl Decoder {
         }
     }
 
+    /// 保留中のフレームを1つのチャンクにして公開する。
     fn publish(&mut self) {
         if self.pending.is_empty() {
             return;
@@ -458,21 +486,27 @@ impl Decoder {
 pub struct Player {
     stream: Option<Arc<Stream>>,
     chunks: VecDeque<Arc<Chunk>>,
+    /// 表示中のチャンクの位置と、その中のフレーム番号。
     index: usize,
     frame: usize,
+    /// 次のフレームへ進む時刻。
     due: Instant,
     clip: Option<Arc<Clip>>,
     frames: Option<usize>,
     streaming: bool,
+    /// デコードが追いつかず、次のフレームを待っている。
     stalled: bool,
     target: Duration,
+    /// 最後に先読み不足が起きた、または先読み時間を減らした時刻。
     smooth_since: Instant,
     low_memory: bool,
+    /// 元ファイルと追加回転。逐次デコードへ移るときと保存で読み直す。
     path: PathBuf,
     turns: u8,
     chunks_changed: bool,
 }
 impl Player {
+    /// 全フレームを保持したClipを先頭から再生する。
     pub fn from_clip(clip: Arc<Clip>, path: PathBuf, turns: u8, now: Instant) -> Self {
         let mut player = Self::empty(path, turns, now);
         player.chunks = clip.chunks.iter().cloned().collect();
@@ -512,6 +546,7 @@ impl Player {
         self.due = now + self.chunks.front().map_or(Duration::ZERO, |c| c.delays[0]);
     }
 
+    /// デコードスレッドが公開したチャンクと状態を取り込む。
     fn pull(&mut self) {
         let Some(stream) = &self.stream else {
             return;
@@ -530,7 +565,7 @@ impl Player {
             self.clip = Some(clip);
         }
         if finished && !self.streaming {
-            // The decoder exited after keeping every frame (or failed); nothing more arrives.
+            // デコードスレッドは全フレームを保持して（または失敗して）終了した。もう何も届かない。
             self.stream = None;
         }
     }
@@ -543,6 +578,7 @@ impl Player {
             return false;
         }
         let mut changed = false;
+        // 遅れを取り戻すのは一度に64フレームまで。1秒以上遅れたら時刻を合わせ直す。
         for _ in 0..64 {
             if now < self.due {
                 break;
@@ -559,7 +595,7 @@ impl Player {
             };
             let Some((index, frame)) = next else {
                 if self.streaming && !self.stalled && self.stream.is_some() {
-                    // The decoder fell behind playback: buffer more from now on.
+                    // デコードが再生に追いつかなかった。以後は多めに先読みする。
                     self.target = (self.target * 3 / 2).min(TARGET_MAX);
                     self.smooth_since = now;
                     self.send_target();
@@ -631,9 +667,11 @@ impl Player {
     pub fn clip(&self) -> Option<&Arc<Clip>> {
         self.clip.as_ref().filter(|_| !self.streaming)
     }
+    /// 1ループのフレーム数。1周目のデコード中はNone。
     pub fn frames(&self) -> Option<usize> {
         self.frames
     }
+    /// 逐次デコードへ移った。
     pub fn streaming(&self) -> bool {
         self.streaming
     }
@@ -641,6 +679,8 @@ impl Player {
     pub fn decoding(&self) -> bool {
         self.stream.is_some()
     }
+    /// 元ファイルと追加回転。全フレームを保持していない間（1周目のデコード中・逐次デコード中）
+    /// の保存で読み直すのに使う。
     pub fn source(&self) -> (&std::path::Path, u8) {
         (&self.path, self.turns)
     }
@@ -649,8 +689,8 @@ impl Player {
         retired.extend(self.chunks.into_iter().map(|c| c.image.clone()));
     }
 
-    /// メモリ逼迫時に使用量を下げる。逐次デコード中は先読みを最小にし、全フレームを
-    /// 保持している場合は現在のチャンクだけ残して逐次デコードへ移る。
+    /// メモリー逼迫時に使用量を下げる。デコード中は先読みを最小にし、全フレームを保持して
+    /// いる場合は現在のチャンクだけ残して逐次デコードへ移る（ahead以下の小さなものは除く）。
     pub fn reduce(&mut self, limits: Limits, retired: &mut Vec<Arc<RenderImage>>) {
         self.low_memory = true;
         if let Some(stream) = &self.stream {
@@ -660,7 +700,8 @@ impl Player {
         let (Some(clip), Some(frames)) = (self.clip.as_ref(), self.frames) else {
             return;
         };
-        // Streaming a small animation would save little and cost decoding every loop.
+        // 小さなアニメーションを逐次デコードにしても減る量は少なく、ループごとのデコードの
+        // 負担が増えるだけ。
         if clip.bytes <= limits.ahead || frames < 2 {
             return;
         }
@@ -750,7 +791,7 @@ mod tests {
         }
     }
 
-    /// Plays one frame per call, as if each frame's delay had elapsed.
+    /// 1回の呼び出しで、遅延が過ぎたものとして1フレーム進める。
     fn advance(player: &mut Player, retired: &mut Vec<Arc<RenderImage>>) -> Option<u64> {
         for _ in 0..500 {
             let now = player.due;
@@ -764,7 +805,7 @@ mod tests {
 
     fn red(player: &Player) -> u8 {
         let (_, image, frame) = player.current();
-        // BGRA: red is the third byte.
+        // BGRAなので、赤は3バイト目。
         image.as_bytes(frame).unwrap()[2]
     }
 
@@ -801,7 +842,7 @@ mod tests {
         let clip = stored.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(clip.frames, 10);
         let sizes: Vec<_> = clip.chunks.iter().map(|c| c.frames()).collect();
-        // Frames are published one by one until enough are visible, then in growing chunks.
+        // 最初は1フレームずつ公開し、十分に見えるようになったらチャンクを大きくしていく。
         assert_eq!(sizes[0], 1);
         assert_eq!(sizes.iter().sum::<usize>(), 10);
         assert!(sizes.len() < 10, "later frames are batched: {sizes:?}");
@@ -825,7 +866,7 @@ mod tests {
     fn over_budget_animation_streams_in_order_across_loops_and_bounds_lookahead() {
         let path = gif("stream", 12, 8, 20);
         let frame = 8 * 8 * 4;
-        // Resident limit fits 3 frames; lookahead bytes fit 4 frames.
+        // 全フレーム保持の上限は3フレーム分、先読みの上限は4フレーム分。
         let stream = Stream::start(
             path.clone(),
             0,
@@ -844,7 +885,7 @@ mod tests {
             let held: u64 = player.chunks().map(|c| c.bytes).sum();
             let state = player.stream.as_ref().unwrap().shared.state.lock().unwrap();
             let queued: u64 = state.ready.iter().map(|c| c.bytes).sum();
-            // Played chunks are released; at most the lookahead plus the chunk on screen remain.
+            // 再生済みのチャンクは手放す。残るのは先読みの上限と、表示中のチャンクまで。
             assert!(
                 held + queued <= frame * (4 + 1 + CHUNK_FRAMES as u64),
                 "held {held} queued {queued}"
@@ -863,7 +904,7 @@ mod tests {
     fn a_resident_attempt_past_the_lookahead_size_is_paced_by_playback() {
         let path = gif("paced", 20, 8, 20);
         let frame = 8 * 8 * 4;
-        // Lookahead fits 3 frames; resident would fit all 20.
+        // 先読みの上限は3フレーム分。全フレーム保持の上限には20フレームすべてが収まる。
         let stream = Stream::start(
             path.clone(),
             0,
@@ -878,7 +919,7 @@ mod tests {
             let state = stream.shared.state.lock().unwrap();
             state.ready.iter().map(|c| c.frames()).sum::<usize>()
         };
-        // Without playback the decoder stops near the lookahead size instead of decoding all 20.
+        // 再生しなければ、20フレームすべてをデコードせず、先読みの上限付近で止まる。
         assert!(decoded(&stream) <= 4 + 2, "decoded {}", decoded(&stream));
         let mut player = Player::from_stream(stream, path.clone(), 0, Instant::now());
         let mut retired = Vec::new();
@@ -997,7 +1038,7 @@ mod tests {
         let first = Arc::downgrade(&stream.first(|| false).unwrap().unwrap().image);
         drop(stream);
         assert!(watch.wait_stopped(|| false));
-        // The exit guard releases its own reference right after recording the exit.
+        // 終了の記録の直後に、終了を記録するガードも自分の参照を手放す。
         let deadline = Instant::now() + Duration::from_secs(2);
         while (clip.upgrade().is_some() || first.upgrade().is_some()) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(2));

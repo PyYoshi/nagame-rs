@@ -1,10 +1,10 @@
 /target/
 __pycache__/
 
-# oh-my-claudecode operational state.
+# oh-my-claudecodeの作業状態。
 .omc/
 
-# IDE local state can contain personal paths.
+# IDEのローカル状態には個人のパスが含まれることがある。
 /.idea/workspace.xml
 
 # claude-security

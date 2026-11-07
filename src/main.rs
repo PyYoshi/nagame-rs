@@ -28,9 +28,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// ツールバーの高さ（論理ピクセル）。
 const BAR: f32 = 48.;
+/// ステータスバーの高さ（論理ピクセル）。
 const FOOTER: f32 = 30.;
 
+/// メニュー・キー・ボタンから実行する操作。
 #[derive(Clone, Copy, Debug)]
 enum Command {
     Open,
@@ -80,23 +83,31 @@ struct Viewer {
     view: Viewport,
     /// 静止画、またはアニメーションの先頭フレーム。保存・コピーの元解像度画像。
     image: Option<Arc<RenderImage>>,
+    /// アニメーションの再生状態。静止画ではNone。
     player: Option<animation::Player>,
+    /// 表示上の寸法（回転と見開きの合成を反映）。
     dimensions: [f32; 2],
+    /// GPUからの解放を待つ画像。2フレーム後に、まだ描画に使う画像を除いて解放する。
     retired: Vec<Arc<RenderImage>>,
     resampling: resample::State,
     ledger: Arc<memory::Ledger>,
+    /// 現在のメモリー予算。budget_atは最後に求めた時刻で、1秒ごとに求め直す。
     budget: memory::Budget,
     budget_at: Instant,
     /// 保持中の画像が変わり、台帳の更新が必要。
     live_dirty: bool,
+    /// 対応済みのメモリー逼迫の通知数。
     pressure_seen: u64,
     /// 0: 通常、1: キャッシュと先読みを削減、2: 補間結果と保持中のアニメーションも削減。
+    /// 新しい通知のたびに1段上げ（最大2）、逼迫が収まったら0に戻す。
     pressure_level: u8,
     /// 解放した小さなバッファをOSへ返す予定時刻。
     release_at: Option<Instant>,
     /// 次の台帳更新で、表示中以外のキャッシュをすべて捨てる。
     trim_aggressive: bool,
+    /// 利用者の追加回転（時計回りに90°単位）。
     turns: u8,
+    /// 読み込みの世代。古い世代の結果は反映しない。
     generation: u64,
     loading: bool,
     error: Option<String>,
@@ -107,7 +118,9 @@ struct Viewer {
     next_slide: Instant,
     last_scroll: Instant,
     drag: Option<(Point<Pixels>, [f32; 2])>,
+    /// 次の読み込みでキャッシュを使わない。
     force_reload: bool,
+    /// 一覧の端で確認ダイアログを出している向き（-1: 先頭、1: 末尾）。
     boundary: Option<isize>,
     active_menu: Option<menu_ui::Menu>,
     menu_anchor: [f32; 2],
@@ -115,8 +128,10 @@ struct Viewer {
     info_visible: bool,
     info_text: Option<String>,
     notice: Option<String>,
+    /// 表示中のページ数（見開きなら2）。
     pages: usize,
     settings: Settings,
+    /// 設定画面で編集中の値。保存するまでsettingsへ反映しない。
     settings_draft: Option<Settings>,
     settings_tab: settings_ui::Tab,
     settings_selected: usize,
@@ -248,6 +263,7 @@ impl Viewer {
         ]
     }
 
+    /// 表示中の画像・アニメーション・補間結果を、GPUからの解放待ちへ移す。
     fn clear_image(&mut self) {
         let held = self.live_images().map(|(_, bytes)| bytes).sum::<u64>();
         self.resampling.clear(&mut self.retired);
@@ -259,7 +275,7 @@ impl Viewer {
         }
         self.live_dirty = true;
         if held >= 32 * memory::MIB {
-            // Retired buffers are freed after two frames; return the heap afterwards.
+            // 退役した画像は2フレーム後に解放される。その後でヒープをOSへ返す。
             self.release_at = Some(Instant::now() + Duration::from_millis(500));
         }
     }
@@ -287,8 +303,8 @@ impl Viewer {
         self.live_dirty = false;
         let images: Vec<_> = self.live_images().collect();
         self.ledger.replace(memory::Holder::Viewer, images);
-        // Trim after the ledger shows what is still on screen (e.g. a GIF that just
-        // moved to streaming keeps only its first and current chunks).
+        // 画面に残る画像を台帳へ反映してから、キャッシュを削る（例えば逐次デコードへ
+        // 移ったばかりのGIFは、先頭と現在のチャンクだけを持つ）。
         self.requests
             .trim(std::mem::take(&mut self.trim_aggressive));
         self.refresh_budget();
@@ -299,7 +315,7 @@ impl Viewer {
         self.budget_at = Instant::now();
     }
 
-    /// メモリ逼迫の通知に段階的に応じ、逼迫が収まったら戻す。
+    /// メモリー逼迫の通知に段階的に応じ、逼迫が収まったら戻す。
     fn respond_to_pressure(&mut self, cx: &mut Context<Self>) {
         let events = memory::pressure_events();
         if events != self.pressure_seen {
@@ -308,8 +324,8 @@ impl Viewer {
             self.trim_aggressive = true;
             self.refresh_budget();
             let limits = self.animation_limits();
-            // Level 1 limits decoding (lookahead, resident attempts); level 2 also moves a
-            // fully kept GIF to streaming.
+            // 段階1ではデコードを抑える（先読みと、全フレーム保持の試み）。段階2では、
+            // 全フレームを保持したGIFも逐次デコードへ移す。
             if let Some(player) = &mut self.player
                 && (self.pressure_level >= 2 || player.decoding())
             {
@@ -507,6 +523,8 @@ impl Viewer {
                 self.error = Some(error);
                 cx.notify();
             }
+            // 全フレームの保持が完了したら（デコードスレッドは先にキャッシュへ登録済み）、
+            // 台帳を更新してキャッシュに数え直しを求める。
             if player.take_chunks_changed() || complete != player.clip().is_some() {
                 self.live_dirty = true;
             }
@@ -748,6 +766,8 @@ impl Viewer {
                         let landscape_single = self.settings.landscape_single;
                         self.resolve_album(
                             move || {
+                                // 見開きでは2ページ戻る。横長のページは単独で表示するので、
+                                // 戻る先の2ページに横長があれば1ページだけ戻る。
                                 let mut step = 2.min(album.index);
                                 if landscape_single {
                                     for offset in 1..=step {
@@ -1062,7 +1082,7 @@ impl Render for Viewer {
         } else {
             self.settings.enlarge_algorithm
         };
-        // The frame to draw: an image and its frame index (animations use chunked images).
+        // 描画する画像とフレーム番号。アニメーションはチャンクの画像とその中のフレーム番号。
         let display_image = if let Some(player) = &self.player {
             let (index, chunk, frame) = player.current();
             let scaled = match player.clip() {
@@ -1073,7 +1093,9 @@ impl Render for Viewer {
                     self.budget.resample,
                     &mut self.retired,
                 ),
-                // Frames of a streaming animation are dropped after playing: use GPU scaling.
+                // 全フレームを保持していない間（1周目のデコード中・逐次デコード中）と、逼迫の
+                // 段階2では、補間せずGPUで拡大縮小する。
+                // 逐次デコードは再生済みのフレームを捨てるため、補間しても使い回せない。
                 _ => {
                     self.resampling.disable(
                         algorithm != resample::Algorithm::Gpu
@@ -1108,12 +1130,11 @@ impl Render for Viewer {
         } else {
             None
         };
-        // Retire after preparing the frame: prepare/disable may have retired images too.
+        // フレームを決めてから退役させる。prepare・disableも画像を退役させることがある。
         if !self.retired.is_empty() {
-            // Rendering can run several times before GPUI submits its atlas uploads.
-            // Removing a texture here invalidates those queued uploads. Keep it
-            // through presentation and one additional frame so Blade has also
-            // synchronized the previous GPU submission before releasing it.
+            // GPUIはアトラスへの転送を送る前に、描画を何度か実行することがある。ここで
+            // テクスチャを消すと、待機中の転送が無効になる。表示とその次の1フレームまで
+            // 保ち、Bladeが前回のGPU送信と同期してから解放する。
             let retired = std::mem::take(&mut self.retired);
             let viewer = cx.weak_entity();
             window.on_next_frame(move |window, _| {
@@ -1124,9 +1145,10 @@ impl Render for Viewer {
                         .map(|viewer| viewer.read(cx).live_ids())
                         .unwrap_or_default();
                     for image in retired {
-                        // The decoded-image cache may have selected this same
-                        // image again before cleanup. Its atlas entry is live.
-                        // Inserting also skips duplicates (a chunk is also the first image).
+                        // 解放までの間に、デコード済み画像のキャッシュから同じ画像が再び
+                        // 表示されていることがある。そのアトラスはまだ使用中なので残す。
+                        // insertは退役リスト内の重複も除く（先頭チャンクの画像はViewerのimageと
+                        // 同じで、二重に退役することがある）。
                         if live.insert(image.id) {
                             let _ = window.drop_image(image);
                         }
@@ -1191,8 +1213,8 @@ impl Render for Viewer {
             let top =
                 px((((area[1] - h) / 2. + self.view.pan[1]) * device_scale).round() / device_scale);
             if let Some(frame) = frame {
-                // GPUI's img would animate every frame of the image on its own.
-                // Nagame's player chooses the frame, so paint it directly.
+                // GPUIのimgは、画像に含まれる全フレームを自前でコマ送りする。
+                // 描くフレームはPlayerが選ぶため、直接描画する。
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, window, _| {
@@ -1482,8 +1504,8 @@ fn main() {
     }
     Application::new().run(move |cx: &mut App| {
         cx.on_window_closed(|cx| {
-            // X11 invokes this hook while borrowing its event-loop state.
-            // Quit on a later turn, after that borrow has been released.
+            // X11はイベントループの状態を借用したままこのフックを呼ぶ。
+            // 借用が外れた後の周回で終了する。
             let executor = cx.background_executor().clone();
             cx.spawn(async move |cx| {
                 executor.timer(Duration::from_millis(1)).await;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a local AppImage, notices, source archive and checksums using Podman."""
+"""Podmanで、AppImage・ライセンス表示・ソースアーカイブ・チェックサムをローカルに生成する。"""
 # SPDX-License-Identifier: GPL-3.0-or-later
 import hashlib
 import html
@@ -65,7 +65,7 @@ def main():
         shutil.copytree(rust_docs / 'licenses', licenses / 'rust-toolchain/licenses')
         shutil.copy2(rust_docs / 'COPYRIGHT-library.html', licenses / 'rust-toolchain/COPYRIGHT-library.html')
 
-        # Snapshot tracked and non-ignored new files, including current uncommitted edits.
+        # 追跡中のファイルと、無視されていない新規ファイルを写す。コミット前の変更も含む。
         project = source / 'nagame'
         project.mkdir()
         for name in capture('git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z').split('\0'):
@@ -82,7 +82,7 @@ def main():
         (project / '.cargo').mkdir(exist_ok=True)
         (project / '.cargo/config.toml').write_text(config + '\n')
 
-        # The runtime's LGPL libfuse is accompanied by source and relinking instructions.
+        # ランタイムが含むLGPLのlibfuseには、ソースと再リンクの手順を添える。
         runtime_sources = source / 'appimage-runtime'
         runtime_sources.mkdir()
         runtime_licenses = licenses / 'appimage-runtime'

@@ -904,7 +904,7 @@ impl Viewer {
 
 #[cfg(test)]
 mod tests {
-    // `use super::*` would also import GPUI's `test` macro.
+    // `use super::*` だとGPUIの `test` マクロも取り込まれるため、個別に指定する。
     use super::{Field, Tab, memory_choices};
     use crate::{i18n::tr, settings::Settings};
     #[test]

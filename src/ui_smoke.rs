@@ -1,4 +1,6 @@
-//! Opt-in real-window UI regression. Never enabled in a normal build.
+//! 実ウィンドウでのUI回帰テスト。`ui-smoke` featureでビルドしたときだけ含まれ、
+//! 通常のビルドでは無効。
+//! 環境変数 `NAGAME_UI_*` でシナリオを選ぶ。失敗はパニックとして終了コードに表れる。
 use crate::{
     Command, Viewer,
     bindings::Shortcut,
@@ -36,7 +38,7 @@ async fn wait_for_folder_image(
                     assert_eq!(v.album.paths[index].file_name().unwrap(), filename);
                 })
                 .unwrap();
-            // Let the window render the decoded image before the next action.
+            // 次の操作の前に、デコードした画像をウィンドウに描画させる。
             executor.timer(Duration::from_millis(100)).await;
             return;
         }
@@ -44,6 +46,7 @@ async fn wait_for_folder_image(
     panic!("Timed out waiting for {directory:?}, image {index}");
 }
 
+/// アプリ内でキー入力を発行する。デスクトップ全体には入力を送らない。
 fn key(handle: WindowHandle<Viewer>, cx: &mut AsyncApp, value: &str) {
     let handle: AnyWindowHandle = handle.into();
     handle
@@ -72,6 +75,7 @@ async fn wait_for_window_state(
     panic!("Timed out waiting for window state");
 }
 
+/// 96×64で、フレームごとに色が変わるGIFを書く（30ms間隔）。
 fn write_gif(path: &std::path::Path, frames: usize, offset: u8) {
     let mut encoder = image::codecs::gif::GifEncoder::new(std::fs::File::create(path).unwrap());
     for i in 0..frames {
@@ -90,6 +94,7 @@ fn write_gif(path: &std::path::Path, frames: usize, offset: u8) {
     }
 }
 
+/// predicateが成り立つまで最大5秒待つ。whatはタイムアウト時のメッセージに使う。
 async fn wait_for(
     handle: WindowHandle<Viewer>,
     cx: &mut AsyncApp,
@@ -106,7 +111,7 @@ async fn wait_for(
     panic!("Timed out waiting for {what}");
 }
 
-/// Samples the frame on screen and returns how many distinct frames were shown.
+/// 画面に出ているフレームをdurationの間調べ、表示された異なるフレームの数を返す。
 async fn shown_frames(
     handle: WindowHandle<Viewer>,
     cx: &mut AsyncApp,
@@ -128,6 +133,7 @@ async fn shown_frames(
     seen.len()
 }
 
+/// GIFの全フレーム保持・表示補間・逐次デコード・高速な画像送り・メモリー逼迫への対応を確かめる。
 async fn animation_check(
     handle: WindowHandle<Viewer>,
     cx: &mut AsyncApp,
@@ -250,7 +256,8 @@ async fn animation_check(
         eprintln!("PASS: {label}: 240 navigation events across GIF and PNG with chunk retirement");
     }
 
-    // Resident (24 frames fit), but larger than the lookahead, so level 2 streams it.
+    // 全フレームを保持できる（24フレームが収まる）が、先読みの上限より大きいため、
+    // 逼迫の段階2で逐次デコードへ移る。
     memory::override_budget(Some(Budget {
         ahead: frame * 6,
         ..Budget::from_total(0)
@@ -260,7 +267,7 @@ async fn animation_check(
         !v.loading && v.player.as_ref().is_some_and(|p| p.clip().is_some())
     })
     .await;
-    // Revisit so the complete clip is also in the cache.
+    // 開き直して、全フレームのClipをキャッシュにも入れる。
     key(handle, cx, "f5");
     wait_for(handle, cx, executor, "cached resident animation", |v| {
         !v.loading && v.player.as_ref().is_some_and(|p| p.clip().is_some())
@@ -275,7 +282,7 @@ async fn animation_check(
         v.pressure_level == 2 && v.player.as_ref().is_some_and(|p| p.streaming())
     })
     .await;
-    // The cache drops the clip too, so the GIF's frames are really released.
+    // キャッシュもClipを手放すので、GIFのフレームが実際に解放される。
     wait_for(handle, cx, executor, "released clip", |v| {
         v.ledger.held() < clip_bytes
     })
@@ -296,6 +303,7 @@ async fn animation_check(
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// 現在のRSS（MiB）。
 fn rss_mib() -> u64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -308,7 +316,7 @@ fn rss_mib() -> u64 {
         .map_or(0, |kib| kib / 1024)
 }
 
-/// Process CPU time (user + system) in seconds.
+/// プロセスのCPU時間（ユーザー＋システム）を秒で返す。クロック刻みは100Hzとみなす。
 fn cpu_seconds() -> f64 {
     std::fs::read_to_string("/proc/self/stat")
         .ok()
@@ -322,8 +330,9 @@ fn cpu_seconds() -> f64 {
         .unwrap_or(0.)
 }
 
-/// Opens each path in turn and reports RSS, CPU, the ledger and the animation mode.
-/// NAGAME_UI_MEMORY_PROFILE=path[:path...][@seconds]; a `pressure` entry signals memory pressure.
+/// パスを順に開き、RSS・CPU・台帳の保持量・アニメーションの状態を1秒ごとに報告する。
+/// `NAGAME_UI_MEMORY_PROFILE=path[:path...][@秒数]`（既定は6秒）。`pressure` を並べると、
+/// その位置でメモリー逼迫を通知する。
 async fn memory_profile(
     handle: WindowHandle<Viewer>,
     cx: &mut AsyncApp,
@@ -337,7 +346,7 @@ async fn memory_profile(
     for path in paths.split(':') {
         let path = std::path::PathBuf::from(path);
         if path.as_os_str() == "pressure" {
-            // Keep the current image and report how much the pressure response releases.
+            // 表示中の画像はそのままにして、逼迫への対応でどれだけ解放されるかを報告する。
             crate::memory::signal_pressure();
             executor.timer(Duration::from_millis(100)).await;
             crate::memory::signal_pressure();
@@ -377,6 +386,7 @@ async fn memory_profile(
     }
 }
 
+/// 環境変数で選んだシナリオを実行し、終わったらウィンドウを閉じる。
 pub fn start(handle: WindowHandle<Viewer>, cx: &mut App) {
     let executor = cx.background_executor().clone();
     cx.spawn(async move |cx| {

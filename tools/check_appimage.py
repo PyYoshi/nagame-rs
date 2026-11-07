@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check an AppImage in isolated Ubuntu, or against the host desktop with --host."""
+"""AppImageを、隔離したUbuntuで（--hostなら現在のデスクトップで）起動して確かめる。"""
 # SPDX-License-Identifier: GPL-3.0-or-later
 import hashlib
 import argparse
@@ -16,7 +16,7 @@ from check_ui import png
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host', action='store_true', help='Use the current desktop and its graphics drivers')
+    parser.add_argument('--host', action='store_true', help='現在のデスクトップとそのグラフィックドライバーを使う')
     host = parser.parse_args().host
     project = Path(__file__).resolve().parent.parent
     artifacts = project / 'target/dist/appimage' if host else Path('/artifacts')
@@ -62,7 +62,7 @@ def main():
             if host:
                 env['VK_LOADER_DEBUG'] = 'error,warn'
             with (root / 'viewer.log').open('w+') as log:
-                # On the host, exercise the same FUSE entry point users execute.
+                # ホストでは、利用者が実行するのと同じFUSE経由の入口から起動する。
                 entry = image if host else app / 'AppRun'
                 process = subprocess.Popen([str(entry), str(fixture)], env=env, stdout=log, stderr=log)
                 try:

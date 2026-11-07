@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble the AppDir in Ubuntu; collect the sources of bundled native packages."""
+"""UbuntuでAppDirを組み立て、同梱するネイティブパッケージのソースを集める。"""
 # SPDX-License-Identifier: GPL-3.0-or-later
 import hashlib
 import json
@@ -44,8 +44,8 @@ def main():
     plugins = Path('/usr/lib/x86_64-linux-gnu/libheif/plugins')
     selected_plugins = [plugins / ('libheif-' + name + '.so') for name in ('aomdec', 'libde265')]
     command = [str(deploy), '--appdir', str(app), '--executable', str(app / 'usr/bin/nagame'),
-               # The host Vulkan ICD may require newer Wayland symbols. Keep its
-               # Wayland client libraries together with the host graphics stack.
+               # ホストのVulkan ICDは、より新しいWaylandのシンボルを使うことがある。
+               # Waylandのクライアントライブラリは同梱せず、ホストのグラフィックスタックと揃える。
                '--exclude-library', 'libwayland-*.so*',
                '--desktop-file', str(source / 'packaging/linux/nagame.desktop'),
                '--icon-file', str(work / 'nagame.png'),
@@ -53,7 +53,7 @@ def main():
     for path in [paths[name] for name in libraries] + selected_plugins:
         command += ['--library', str(path)]
     run(*command)
-    # libheif searches only this private directory, excluding host/encoder plugins.
+    # libheifはこの専用ディレクトリだけを探す。ホストのプラグインとエンコーダーは使わない。
     (app / 'usr/lib/libheif').mkdir()
     for plugin in selected_plugins:
         shutil.move(app / 'usr/lib' / plugin.name, app / 'usr/lib/libheif' / plugin.name)
@@ -70,7 +70,7 @@ def main():
     for library in (app / 'usr/lib').rglob('*'):
         if not library.is_file() or library.is_symlink():
             continue
-        # Find the original package before linuxdeploy's strip/RPATH changes.
+        # linuxdeployがstripやRPATHを変える前の、元のファイルから所有パッケージを探す。
         candidates = list(Path('/usr/lib/x86_64-linux-gnu').glob(library.name))
         candidates += list(plugins.glob(library.name))
         if not candidates:
@@ -93,7 +93,8 @@ def main():
     manifest = dict(packages=packages, files=files)
     (native / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
 
-    # Confirm no unresolved ELF dependencies under the private library path.
+    # LD_LIBRARY_PATHを同梱ディレクトリにして、解決できないELFの依存がないことを確かめる
+    # （システムの既定パスも探索される）。
     env = dict(os.environ, LD_LIBRARY_PATH=str(app / 'usr/lib'))
     for binary in [app / 'usr/bin/nagame'] + list((app / 'usr/lib').rglob('*.so*')):
         result = run('ldd', str(binary), env=env, stdout=subprocess.PIPE).stdout

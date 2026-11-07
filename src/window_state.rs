@@ -1,10 +1,11 @@
-//! Persist normal window geometry separately from user-editable settings.
+//! 通常時のウィンドウの大きさ・位置と最大化の有無を、利用者が編集する設定とは
+//! 別のファイルに保存する。
 use gpui::{Bounds, Pixels, point, px, size};
 use serde::{Deserialize, Serialize};
 use std::{fs, io::Write, path::Path};
 
-/// GPUI's initial X11 coordinates can be overridden by smart placement. Send a
-/// normal application EWMH request after mapping; never use this on Wayland.
+/// GPUIがX11で指定した初期位置は、ウィンドウマネージャーの自動配置で上書きされることがある。
+/// そのため表示後に、通常のアプリケーションとしてEWMHの移動要求を送る。Waylandでは使わない。
 pub fn restore_position(window: &gpui::Window, origin: gpui::Point<Pixels>) -> Result<(), String> {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
@@ -15,8 +16,8 @@ pub fn restore_position(window: &gpui::Window, origin: gpui::Point<Pixels>) -> R
         let send = || -> Result<(), Box<dyn std::error::Error>> {
             let (connection, screen) = x11rb::connect(None)?;
             let root = connection.setup().roots[screen].root;
-            // GPUI 0.2.2's X11 raw window handle is unimplemented. Nagame has
-            // one window per process; identify only our own client by its PID.
+            // GPUI 0.2.2はX11のraw window handleを実装していない。Nagameは1プロセス1ウィンドウ
+            // なので、PIDで自分のクライアントだけを特定する。
             let clients = connection
                 .intern_atom(false, b"_NET_CLIENT_LIST")?
                 .reply()?
@@ -49,8 +50,8 @@ pub fn restore_position(window: &gpui::Window, origin: gpui::Point<Pixels>) -> R
                 .reply()?
                 .atom;
             let scale = window.scale_factor();
-            // StaticGravity, x/y present, source=application. The WM still has
-            // the final say; no pager privileges or compositor-specific rules.
+            // StaticGravity、x/yを指定、要求元はアプリケーション。最終的な位置はウィンドウ
+            // マネージャーが決める。ページャーの権限やコンポジター固有の規則は使わない。
             let flags = 10 | (1 << 8) | (1 << 9) | (1 << 12);
             let event = ClientMessageEvent::new(
                 32,
@@ -82,11 +83,13 @@ pub fn restore_position(window: &gpui::Window, origin: gpui::Point<Pixels>) -> R
     Ok(())
 }
 
+/// 次回の起動で復元するウィンドウの状態。最大化・全画面の間も、通常時の大きさと位置を保つ。
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowState {
+    /// 通常時の大きさ（論理ピクセル）。
     pub size: [f32; 2],
-    /// Only populated by backends which expose global window coordinates.
+    /// ウィンドウのグローバル座標を取得できる環境でだけ記録する（Waylandでは記録しない）。
     pub position: Option<[f32; 2]>,
     pub maximized: bool,
 }
@@ -106,6 +109,7 @@ impl WindowState {
         crate::settings::Settings::path().map(|path| path.with_file_name("window-state.json"))
     }
 
+    /// 読めない・壊れたファイルは既定値に、不正な大きさは既定の大きさに戻す。
     pub fn load(path: &Path) -> Self {
         let mut state: Self = fs::read(path)
             .ok()
@@ -122,8 +126,8 @@ impl WindowState {
         state
     }
 
-    /// The first display is the primary display. Clamp restored geometry so a
-    /// disconnected monitor or changed scaling does not leave the window lost.
+    /// 先頭のディスプレイを主ディスプレイとする。モニターの取り外しや拡大率の変更で
+    /// ウィンドウが画面外に出ないよう、復元する位置と大きさをディスプレイ内に収める。
     pub fn restored_bounds(
         &self,
         displays: &[Bounds<Pixels>],
@@ -146,8 +150,8 @@ impl WindowState {
                 740.
             },
         ];
-        // Wayland outputs may not be announced when Application::run starts.
-        // Let the compositor constrain the size once its first configure arrives.
+        // Waylandでは、Application::runの開始時点で出力がまだ通知されていないことがある。
+        // 最初のconfigureが届いた時点で、コンポジターに大きさを制限させる。
         if displays.is_empty() {
             return Bounds::new(
                 point(px(0.), px(0.)),
@@ -161,6 +165,8 @@ impl WindowState {
             .position
             .filter(|p| position_supported && p.iter().all(|v| v.is_finite()));
         let mut display = primary;
+        // 位置を指定できない環境（Wayland）で主ディスプレイに収まらない大きさなら、収まる最初の
+        // ディスプレイ、なければ最も広いディスプレイを基準に大きさを制限する。
         if !position_supported
             && (requested[0] > f32::from(primary.size.width)
                 || requested[1] > f32::from(primary.size.height))
@@ -216,6 +222,7 @@ impl WindowState {
         Bounds::new(origin, size(px(width), px(height)))
     }
 
+    /// 現在の状態を記録する。全画面中は何も変えず、最大化中は通常時の大きさと位置を残す。
     pub fn record(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -240,6 +247,7 @@ impl WindowState {
         }
     }
 
+    /// 一時ファイルに書いてから置き換える。書き込みの失敗で既存のファイルを壊さない。
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let parent = path
             .parent()

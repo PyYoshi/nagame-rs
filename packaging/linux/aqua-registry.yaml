@@ -1,4 +1,4 @@
-# AppImage tools are not in the pinned standard registry.
+# AppImageのツールは、固定した標準レジストリーに含まれていない。
 packages:
 - type: github_release
   repo_owner: linuxdeploy

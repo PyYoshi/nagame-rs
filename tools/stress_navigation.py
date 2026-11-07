@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""X11 GUI regression for rapid texture retirement (needs libX11, libXtst, xprop).
+"""X11で、高速な画像送りによるテクスチャの退役を確かめるGUI回帰テスト。
 
-Runs an isolated viewer with generated PNGs and targets only that viewer window.
-Usage: python3 tools/stress_navigation.py [path/to/nagame]
+libX11・libXtst・xpropが必要。生成したPNGで隔離したビューアーを起動し、そのウィンドウだけを操作対象にする。
+使い方: python3 tools/stress_navigation.py [path/to/nagame]
 """
 import ctypes as c
 import os
@@ -100,8 +100,8 @@ def main():
                         assert (index > previous if direction == b'Right' else index < previous), current
                         previous = index
                         print(f'{direction.decode()}: 350 input events; final image {index}; viewer alive', flush=True)
-                    # Exercise the real window-close callback as well, rather
-                    # than hiding shutdown errors behind process.terminate().
+                    # process.terminate()で終了時のエラーを隠さず、実際にウィンドウを閉じる
+                    # 処理も通す。
                     class ClientMessage(c.Structure):
                         _fields_ = [('type', c.c_int), ('serial', c.c_ulong), ('send_event', c.c_int),
                                     ('display', c.c_void_p), ('window', c.c_ulong),
