@@ -23,15 +23,18 @@ AppImage用の4ツールは標準レジストリにないため、[ローカル�
 
 ```sh
 aqua policy allow aqua-policy.yaml
-aqua install
+aqua exec -- just setup
 just secrets
 ```
+
+`just setup` はツールの導入後、このリポジトリの `core.hooksPath` を `.githooks` に設定する。ツールが導入済みの場合は `just install-hooks` だけでも有効にできる。グローバルなGit設定は変更しない。別のフックを既に使っている環境では、設定を切り替える前に内容を確認する。
 
 開発コマンドは [justfile](../justfile) にまとめている。`just` だけで一覧を表示する。aqua管理のbinディレクトリがPATHにない場合や、別のjustが優先される環境では `aqua exec -- just <コマンド>` で固定版を実行できる。
 
 | コマンド | 内容 |
 |---|---|
-| `just setup` | aquaの開発ツールをインストール |
+| `just setup` | aquaの開発ツールをインストールし、コミットフックを有効化 |
+| `just install-hooks` | このリポジトリのコミットフックだけを有効化 |
 | `just build` | 開発用ビルド |
 | `just release` | 通常アプリのリリースビルド。出力は `target/release/nagame` |
 | `just dist-build` / `just dist-test` | crossとPodmanによる配布用ビルド／単体テスト。[環境と出力先](distribution.md) |
@@ -55,6 +58,8 @@ Git履歴を検査する場合は、コミットが存在するリポジトリ�
 ```sh
 aqua exec -- betterleaks git --config .betterleaks.toml --redact .
 ```
+
+有効化した [.githooks/pre-commit](../.githooks/pre-commit) は、コミット直前に固定版betterleaksを `git --pre-commit --staged` で実行する。ステージされた差分に検出があるとコミットを停止し、値をマスクしてファイル・行などを表示する。作業ツリーだけにある未ステージの内容は、このフックの検査対象ではない。ステージ後に作業ツリーから値を消しただけでは通過せず、修正内容の再ステージが必要になる。フック・設定・必要なツールを実行できない場合もコミットを停止する。
 
 開発ツールの版を更新する場合は `aqua.yaml` を編集した後、チェックサムを更新して再検査する。betterleaksのチェックサム取得時は標準レジストリに定義されたCosign署名検証も行われる。
 

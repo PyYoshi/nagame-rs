@@ -2,9 +2,14 @@
 default:
     @just --list
 
-# aquaで固定した開発ツールをインストール
+# aquaで固定した開発ツールとコミットフックを導入
 setup:
     aqua install
+    git config --local core.hooksPath .githooks
+
+# このリポジトリのコミットフックを有効にする
+install-hooks:
+    git config --local core.hooksPath .githooks
 
 # 開発用ビルド
 build:

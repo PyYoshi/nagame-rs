@@ -96,7 +96,7 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 
 翻訳リソースとライブラリの比較・選定理由は [多言語対応](docs/localization.md) を参照してください。
 
-[開発ツールの導入手順](docs/development.md#開発ツールと秘密情報の検査) に従ってaquaのポリシーを確認・信頼登録し、`aqua install` でツールを導入します。`just release` でリリースビルド、`just secrets` でbetterleaksの検査、`just check` で基本チェック一式を実行できます。`just` だけでコマンド一覧を表示します。
+[開発ツールの導入手順](docs/development.md#開発ツールと秘密情報の検査) に従ってaquaのポリシーを確認・信頼登録し、`aqua exec -- just setup` でツールとコミットフックを導入します。コミット時にはステージされた差分をbetterleaksで検査します。`just release` でリリースビルド、`just secrets` で現在のファイル全体の検査、`just check` で基本チェック一式を実行できます。`just` だけでコマンド一覧を表示します。
 
 [コード構成と設計](docs/architecture.md) にモジュールの責務、非同期処理、画素表現とGPU画像の寿命をまとめています。[開発・検証](docs/development.md) に変更箇所の案内、チェック手順、実ウィンドウテスト、性能調査のコマンドを記載しています。crossとPodmanを使う配布用の環境は [配布用ビルド](docs/distribution.md) を参照してください。
 
