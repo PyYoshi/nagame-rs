@@ -138,7 +138,7 @@ tab-keyboard = キー設定
 
 field-boundary = 最初・最後の画像に到達した時
 
-field-previous-first = 前のフォルダは先頭画像を開く
+field-previous-first = 「前のフォルダ」で先頭画像を開く
 
 field-parent-first = 親フォルダは先頭画像を開く
 

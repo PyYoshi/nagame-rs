@@ -139,7 +139,7 @@ tab-keyboard = Keyboard
 
 field-boundary = At the first or last image
 
-field-previous-first = Open previous folders at the first image
+field-previous-first = Open first image with Previous folder
 
 field-parent-first = Open parent folders at the first image
 

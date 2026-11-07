@@ -35,6 +35,7 @@ def main():
         env = dict(os.environ, NAGAME_UI_SMOKE='1', RUST_BACKTRACE='1', XDG_CONFIG_HOME=str(root / 'config'))
         env.pop('NAGAME_UI_RESTART', None)
         env.pop('NAGAME_UI_STRESS', None)
+        env.pop('NAGAME_UI_FOLDER_NAVIGATION', None)
         env.pop('WAYLAND_DISPLAY', None)
 
         def run(path, extra):
@@ -48,6 +49,13 @@ def main():
             if result:
                 raise RuntimeError(f'Viewer exited with status {result}')
 
+        folders = root / 'folders'
+        for folder in ('01', '02'):
+            directory = folders / folder
+            directory.mkdir(parents=True)
+            for name in ('01.png', '02.png', '03.png'):
+                png(directory / name, 64, 64, (50, 80, 180, 255))
+        run(folders / '02/01.png', {'NAGAME_UI_FOLDER_NAVIGATION': '1'})
         run(images / '0000.png', {'NAGAME_UI_STRESS': '1'})
         pages = root / 'pages'
         pages.mkdir()

@@ -82,6 +82,8 @@ LRUは256 MiB・最大8エントリー。キーにはパス、更新日時、フ
 
 `Album` はディレクトリ、並び替え済みのパス一覧、現在位置を保持する。対応拡張子は `supported`、数値順は整数への変換を避ける `natural_cmp` が担う。画像のある前後フォルダへの探索、空も含む同階層の隣接フォルダ、親フォルダは別の操作として実装されている。
 
+画像送りでフォルダ境界を越えるときは `Viewer::continue_to_folder` を使い、前方向は移動先の末尾、次方向は先頭を選ぶ。自動移動と確認ダイアログの `Command::BoundaryFolder` はこの経路を共有する。`previous_folder_first` は `PreviousFolder`・`PreviousSibling` の直接操作だけに適用する。どちらも移動先をソートした後で位置を決めるため、逆順にも対応する。
+
 `Viewport` はフィット、倍率、パンを保持し、`clamp` で画像が画面外へ消えないよう制限する。見開きの前進は `Loaded.pages` 枚単位で進み、後退は `decoder::dimensions` による直前画像の寸法も使う。横長単独設定、読む方向、左右キーの反転を混同しない。
 
 キーボードは `Viewer::key` が設定画面、メニュー、情報画面の順で振り分け、その後に設定済み `Shortcut`、スクロール等を処理する。`shortcut_command` で `Command` へ変換し、ボタンやメニューも `command` へ集約する。

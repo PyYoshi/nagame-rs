@@ -1,6 +1,6 @@
 //! Opt-in real-window UI regression. Never enabled in a normal build.
 use crate::{
-    Viewer,
+    Command, Viewer,
     bindings::Shortcut,
     i18n::{Language, tr},
     settings::{BoundaryAction, Settings},
@@ -8,6 +8,41 @@ use crate::{
 };
 use gpui::*;
 use std::time::Duration;
+
+async fn wait_for_folder_image(
+    handle: WindowHandle<Viewer>,
+    cx: &mut AsyncApp,
+    executor: &BackgroundExecutor,
+    directory: &std::path::Path,
+    index: usize,
+) {
+    for _ in 0..200 {
+        executor.timer(Duration::from_millis(10)).await;
+        if handle
+            .read_with(cx, |v, _| {
+                v.album.directory == directory && v.album.index == index && !v.loading
+            })
+            .unwrap()
+        {
+            handle
+                .read_with(cx, |v, _| {
+                    assert!(v.error.is_none(), "{:?}", v.error);
+                    assert!(v.image.is_some());
+                    let filename = if (index == 0) != v.settings.reverse {
+                        "01.png"
+                    } else {
+                        "03.png"
+                    };
+                    assert_eq!(v.album.paths[index].file_name().unwrap(), filename);
+                })
+                .unwrap();
+            // Let the window render the decoded image before the next action.
+            executor.timer(Duration::from_millis(100)).await;
+            return;
+        }
+    }
+    panic!("Timed out waiting for {directory:?}, image {index}");
+}
 
 fn key(handle: WindowHandle<Viewer>, cx: &mut AsyncApp, value: &str) {
     let handle: AnyWindowHandle = handle.into();
@@ -21,6 +56,59 @@ fn key(handle: WindowHandle<Viewer>, cx: &mut AsyncApp, value: &str) {
 pub fn start(handle: WindowHandle<Viewer>, cx: &mut App) {
     let executor = cx.background_executor().clone();
     cx.spawn(async move |cx| {
+        if std::env::var_os("NAGAME_UI_FOLDER_NAVIGATION").is_some() {
+            for _ in 0..200 {
+                executor.timer(Duration::from_millis(10)).await;
+                if handle.read_with(cx, |v, _| !v.loading && !v.album.paths.is_empty()).unwrap() {
+                    executor.timer(Duration::from_millis(100)).await;
+                    break;
+                }
+            }
+            let current = handle.read_with(cx, |v, _| v.album.directory.clone()).unwrap();
+            let previous = current.parent().unwrap().join("01");
+            for previous_first in [true, false] {
+                for reverse in [false, true] {
+                    for boundary in [BoundaryAction::Folder, BoundaryAction::Ask] {
+                        handle.update(cx, |v, _, cx| {
+                            v.settings = Settings {
+                                previous_folder_first: previous_first,
+                                reverse,
+                                boundary,
+                                ..Settings::default()
+                            };
+                            v.album = crate::model::Album::open(&current).unwrap();
+                            v.album.sort(&v.settings);
+                            v.album.index = 0;
+                            v.load(true, cx);
+                        }).unwrap();
+                        wait_for_folder_image(handle, cx, &executor, &current, 0).await;
+                        key(handle, cx, "left");
+                        if boundary == BoundaryAction::Ask {
+                            handle.read_with(cx, |v, _| assert_eq!(v.boundary, Some(-1))).unwrap();
+                            handle.update(cx, |v, window, cx| v.command(Command::BoundaryFolder, window, cx)).unwrap();
+                        }
+                        wait_for_folder_image(handle, cx, &executor, &previous, 2).await;
+                        key(handle, cx, "right");
+                        if boundary == BoundaryAction::Ask {
+                            handle.read_with(cx, |v, _| assert_eq!(v.boundary, Some(1))).unwrap();
+                            handle.update(cx, |v, window, cx| v.command(Command::BoundaryFolder, window, cx)).unwrap();
+                        }
+                        wait_for_folder_image(handle, cx, &executor, &current, 0).await;
+                        key(handle, cx, "up");
+                        let folder_index = if previous_first { 0 } else { 2 };
+                        wait_for_folder_image(handle, cx, &executor, &previous, folder_index).await;
+                        key(handle, cx, "down");
+                        wait_for_folder_image(handle, cx, &executor, &current, 0).await;
+                        key(handle, cx, "ctrl-left");
+                        wait_for_folder_image(handle, cx, &executor, &previous, folder_index).await;
+                    }
+                }
+            }
+            eprintln!("PASS: boundary image navigation and explicit folder commands select different entry images, including prompts and reverse sorting");
+            let any: AnyWindowHandle = handle.into();
+            any.update(cx, |_, window, _| window.remove_window()).unwrap();
+            return;
+        }
         if std::env::var_os("NAGAME_UI_STRESS").is_some() {
             executor.timer(Duration::from_millis(300)).await;
             for direction in ["right", "left", "right", "left"] {

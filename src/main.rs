@@ -54,6 +54,7 @@ enum Command {
     Slide,
     Reload,
     Wrap,
+    BoundaryFolder,
     Dismiss,
     PreviousFolder,
     NextFolder,
@@ -507,6 +508,11 @@ impl Viewer {
             Command::Dismiss => {
                 self.boundary = None;
             }
+            Command::BoundaryFolder => {
+                if let Some(direction) = self.boundary.take() {
+                    self.continue_to_folder(direction, cx);
+                }
+            }
             Command::Wrap => {
                 if let Some(direction) = self.boundary.take() {
                     self.album.index = if direction > 0 {
@@ -762,25 +768,27 @@ impl Viewer {
                 };
                 self.load(true, cx);
             }
-            BoundaryAction::Folder => {
-                let album = self.album.clone();
-                let settings = self.settings.clone();
-                self.resolve_album(
-                    move || {
-                        let mut target = album.folder(direction, false)?;
-                        target.sort(&settings);
-                        target.index = if direction < 0 && !settings.previous_folder_first {
-                            target.paths.len().saturating_sub(1)
-                        } else {
-                            0
-                        };
-                        Ok(target)
-                    },
-                    cx,
-                );
-            }
+            BoundaryAction::Folder => self.continue_to_folder(direction, cx),
         }
         cx.notify();
+    }
+
+    fn continue_to_folder(&mut self, direction: isize, cx: &mut Context<Self>) {
+        let album = self.album.clone();
+        let settings = self.settings.clone();
+        self.resolve_album(
+            move || {
+                let mut target = album.folder(direction, false)?;
+                target.sort(&settings);
+                target.index = if direction < 0 {
+                    target.paths.len().saturating_sub(1)
+                } else {
+                    0
+                };
+                Ok(target)
+            },
+            cx,
+        );
     }
 
     fn apply_settings(&mut self, cx: &mut Context<Self>) {
@@ -1171,11 +1179,7 @@ impl Render for Viewer {
                                         } else {
                                             tr!("go-previous-folder")
                                         },
-                                        if direction > 0 {
-                                            Command::NextFolder
-                                        } else {
-                                            Command::PreviousFolder
-                                        },
+                                        Command::BoundaryFolder,
                                         cx,
                                     ))
                                     .child(self.button(
