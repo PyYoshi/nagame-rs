@@ -1,5 +1,7 @@
 //! 表示専用のリサイズ（補間）。元画像の画素は、保存・コピーと倍率の変更のために残す。
+//! 文字・図形を含むPDFのページを拡大するときは、補間の代わりに表示解像度で描き直す。
 use crate::i18n::tr;
+use crate::pdf;
 use gpui::{ImageId, RenderImage};
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -60,12 +62,51 @@ struct Key {
     width: u32,
     height: u32,
     algorithm: Algorithm,
+    /// 補間ではなくPDFのページを描き直す（方式は使わない）。
+    vector: bool,
 }
 type Images = Arc<[Arc<RenderImage>]>;
+/// 表示解像度で描き直せるPDFのページ（文字・図形を含む単独表示のページ）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Vector {
+    pub path: std::path::PathBuf,
+    pub page: u32,
+    /// 利用者の追加回転。描いた後に反映する。
+    pub turns: u8,
+}
 struct Request {
     key: Key,
     sources: Images,
+    vector: Option<Vector>,
     generation: u64,
+}
+/// PDFのページをwidth×height（追加回転後の寸法）で描き直す。
+fn redraw(
+    vector: &Vector,
+    width: u32,
+    height: u32,
+    cancelled: impl Fn() -> bool,
+) -> Result<Arc<RenderImage>, String> {
+    let (width, height) = if vector.turns % 2 == 1 {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let rendered = pdf::render(
+        &vector.path,
+        vector.page,
+        pdf::Mode::Size { width, height },
+        pdf::Class::Display,
+        cancelled,
+    )
+    .map_err(pdf::Failure::message)?;
+    let pixels = match vector.turns % 4 {
+        1 => image::imageops::rotate90(&rendered.pixels),
+        2 => image::imageops::rotate180(&rendered.pixels),
+        3 => image::imageops::rotate270(&rendered.pixels),
+        _ => rendered.pixels,
+    };
+    Ok(Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])))
 }
 struct Response {
     key: Key,
@@ -142,6 +183,8 @@ pub struct State {
     active: Arc<AtomicU64>,
     generation: u64,
     wanted: Option<(Key, Images)>,
+    /// wantedがPDFのページの描き直しなら、そのページ。
+    wanted_vector: Option<Vector>,
     since: Instant,
     sent: bool,
     ready: Option<(Key, Images)>,
@@ -166,20 +209,25 @@ impl Default for State {
                     continue;
                 }
                 let cancelled = || cancellation.load(Ordering::Relaxed) != request.generation;
-                let result = request
-                    .sources
-                    .iter()
-                    .map(|source| {
-                        resize(
-                            source,
-                            request.key.width,
-                            request.key.height,
-                            request.key.algorithm,
-                            cancelled,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(Images::from);
+                let result = if let Some(vector) = &request.vector {
+                    redraw(vector, request.key.width, request.key.height, cancelled)
+                        .map(|image| Images::from(vec![image]))
+                } else {
+                    request
+                        .sources
+                        .iter()
+                        .map(|source| {
+                            resize(
+                                source,
+                                request.key.width,
+                                request.key.height,
+                                request.key.algorithm,
+                                cancelled,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(Images::from)
+                };
                 if cancellation.load(Ordering::Relaxed) == request.generation
                     && output
                         .send(Response {
@@ -198,6 +246,7 @@ impl Default for State {
             active,
             generation: 0,
             wanted: None,
+            wanted_vector: None,
             since: Instant::now(),
             sent: false,
             ready: None,
@@ -224,6 +273,7 @@ impl State {
         self.generation += 1;
         self.active.store(self.generation, Ordering::Relaxed);
         self.wanted = None;
+        self.wanted_vector = None;
         self.sent = false;
         self.error = None;
         self.fallback = false;
@@ -239,13 +289,15 @@ impl State {
         self.fallback = fallback;
     }
     /// sourcesの補間済み画像があれば返す。なければ元画像をGPUで拡大縮小して表示する。
-    /// limitは出力の全フレーム合計の上限。
+    /// limitは出力の全フレーム合計の上限。vectorのページを元画像より大きく表示するときは、
+    /// 方式によらず表示解像度で描き直す。
     pub fn prepare(
         &mut self,
         sources: &[Arc<RenderImage>],
         target: [u32; 2],
         algorithm: Algorithm,
         limit: u64,
+        vector: Option<&Vector>,
         retired: &mut Vec<Arc<RenderImage>>,
     ) -> Option<Images> {
         let [width, height] = target;
@@ -256,6 +308,36 @@ impl State {
             || height > 16384
             || u64::from(width) * u64::from(height) * 4 * frames > limit;
         let original = sources.first()?.size(0);
+        // 丸めによる1画素程度の拡大では描き直さない。
+        let enlarged = width as f32 > u32::from(original.width) as f32 * 1.02
+            || height as f32 > u32::from(original.height) as f32 * 1.02;
+        if let Some(vector) = vector
+            && enlarged
+            && !fallback
+            && sources.len() == 1
+        {
+            let key = Key {
+                source: sources[0].id,
+                count: 1,
+                width,
+                height,
+                algorithm: Algorithm::Gpu,
+                vector: true,
+            };
+            if self.wanted.as_ref().map(|(k, _)| *k) != Some(key)
+                || self.wanted_vector.as_ref() != Some(vector)
+            {
+                self.clear(retired);
+                self.since = Instant::now();
+                self.wanted = Some((key, sources.into()));
+                self.wanted_vector = Some(vector.clone());
+            }
+            return self
+                .ready
+                .as_ref()
+                .filter(|(k, _)| *k == key)
+                .map(|(_, images)| images.clone());
+        }
         if algorithm == Algorithm::Gpu
             || fallback
             || (width == u32::from(original.width) && height == u32::from(original.height))
@@ -269,6 +351,7 @@ impl State {
             width,
             height,
             algorithm,
+            vector: false,
         };
         if self.wanted.as_ref().map(|(k, _)| *k) != Some(key) {
             self.clear(retired);
@@ -312,6 +395,7 @@ impl State {
                 .send(Request {
                     key: *key,
                     sources: sources.clone(),
+                    vector: self.wanted_vector.clone(),
                     generation: self.generation,
                 })
                 .is_err()
@@ -350,15 +434,29 @@ mod tests {
         let mut retired = Vec::new();
         assert!(
             state
-                .prepare(sources, [16, 16], Algorithm::Gpu, limit, &mut retired)
+                .prepare(sources, [16, 16], Algorithm::Gpu, limit, None, &mut retired)
                 .is_none()
         );
         assert!(!state.pending());
-        state.prepare(sources, [16, 16], Algorithm::Nearest, limit, &mut retired);
+        state.prepare(
+            sources,
+            [16, 16],
+            Algorithm::Nearest,
+            limit,
+            None,
+            &mut retired,
+        );
         state.since = Instant::now() - Duration::from_millis(100);
         state.tick(&mut retired);
         std::thread::sleep(Duration::from_millis(10));
-        state.prepare(sources, [24, 24], Algorithm::Linear, limit, &mut retired);
+        state.prepare(
+            sources,
+            [24, 24],
+            Algorithm::Linear,
+            limit,
+            None,
+            &mut retired,
+        );
         state.tick(&mut retired);
         assert!(state.ready_id().is_none());
         state.since = Instant::now() - Duration::from_millis(100);
@@ -368,7 +466,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         let output = state
-            .prepare(sources, [24, 24], Algorithm::Linear, limit, &mut retired)
+            .prepare(
+                sources,
+                [24, 24],
+                Algorithm::Linear,
+                limit,
+                None,
+                &mut retired,
+            )
             .unwrap();
         assert_eq!(u32::from(output[0].size(0).width), 24);
         assert_ne!(output[0].id, source.id);
@@ -379,6 +484,7 @@ mod tests {
                     [u32::MAX, u32::MAX],
                     Algorithm::Lanczos3,
                     limit,
+                    None,
                     &mut retired
                 )
                 .is_none()
@@ -394,6 +500,7 @@ mod tests {
                     [24, 24],
                     Algorithm::Linear,
                     24 * 24 * 4 - 1,
+                    None,
                     &mut retired
                 )
                 .is_none()
@@ -425,6 +532,7 @@ mod tests {
                     [8, 8],
                     Algorithm::Nearest,
                     8 * 8 * 4 * 4,
+                    None,
                     &mut retired
                 )
                 .is_none()
@@ -441,6 +549,7 @@ mod tests {
                 [8, 8],
                 Algorithm::Nearest,
                 8 * 8 * 4 * 4,
+                None,
                 &mut retired,
             )
             .unwrap();

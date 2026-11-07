@@ -1,0 +1,4 @@
+[env]
+# `just pdfium` で取得した固定版のPDFium。cargo run・cargo testのPDF描画が使う。
+# 既に環境変数がある場合はそちらを優先する。
+NAGAME_PDFIUM_LIBRARY = { value = "target/pdfium/chromium-8125/lib/libpdfium.so", relative = true }

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
@@ -80,7 +81,10 @@ def main():
         config = capture('cargo', '+1.99.1', 'vendor', '--locked', '--versioned-dirs', str(vendor))
         config = config.replace(str(vendor), 'rust-vendor')
         (project / '.cargo').mkdir(exist_ok=True)
-        (project / '.cargo/config.toml').write_text(config + '\n')
+        # 既存の設定（PDFiumの環境変数）を残し、vendorの設定を追記する。
+        existing = project / '.cargo/config.toml'
+        prefix = existing.read_text() + '\n' if existing.exists() else ''
+        existing.write_text(prefix + config + '\n')
 
         # ランタイムが含むLGPLのlibfuseには、ソースと再リンクの手順を添える。
         runtime_sources = source / 'appimage-runtime'
@@ -109,8 +113,10 @@ def main():
                         with archive.extractfile(member) as stream:
                             destination.write_bytes(stream.read())
         shutil.copy2(ROOT / 'packaging/linux/runtime-sources.json', runtime_sources / 'sources.json')
+        # PDFiumはUbuntuのパッケージではなく、SHA256で照合した固定版の配布物を同梱する。
+        pdfium = Path(capture(sys.executable, str(ROOT / 'tools/fetch_pdfium.py'))).parent.parent
         mounts = ['-v', f'{ROOT}:/source:ro,z', '-v', f'{work}:/work:z',
-                  '-v', f'{binary.parent}:/binary:ro,z']
+                  '-v', f'{binary.parent}:/binary:ro,z', '-v', f'{pdfium}:/pdfium:ro,z']
         for name, path in tools.items():
             mounts += ['-v', f'{path}:/tools/{name}:ro,z']
         run('podman', 'run', '--rm', '--platform', 'linux/amd64', *mounts,
@@ -129,6 +135,7 @@ def main():
                           dirty=bool(capture('git', 'status', '--porcelain')),
                           binary_sha256=digest(binary), appimage_sha256=digest(appimage),
                           runtime_sha256=digest(tools['appimage-runtime']),
+                          pdfium=json.loads((ROOT / 'packaging/linux/pdfium.json').read_text()),
                           native=json.loads((work / 'native-manifest.json').read_text()))
         (work / 'build-info.json').write_text(json.dumps(build_info, indent=2) + '\n')
         artifacts = [appimage, archive_path, work / 'build-info.json']

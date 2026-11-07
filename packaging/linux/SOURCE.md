@@ -32,6 +32,20 @@ extract the AppImage with `--appimage-extract`, replace the library in
 `squashfs-root/usr/lib/` (libheif plugins: `usr/lib/libheif/`), then run
 `squashfs-root/AppRun`. No signature check prevents replacement.
 
+## PDFium
+
+`usr/lib/libpdfium.so` in the AppDir is the prebuilt PDFium 158.0.8125.0
+(`chromium/8125`, without V8/XFA) from bblanchon/pdfium-binaries, pinned by URL
+and SHA256 in `nagame/packaging/linux/pdfium.json` (also recorded in
+`build-info.json`). PDFium is BSD-3-Clause/Apache-2.0; its own and its bundled
+third-party notices are in `licenses/third-party/pdfium/`. `just pdfium` (or
+`python3 tools/fetch_pdfium.py`) downloads and verifies the same archive.
+
+Nagame loads PDFium only in its PDF helper process, from `../lib/libpdfium.so`
+relative to the executable or from the absolute path in `NAGAME_PDFIUM_LIBRARY`.
+A replacement must provide the same PDFium API version (pdfium-render's
+`pdfium_8125` feature); replace the file in an extracted AppDir as above.
+
 ## AppImage runtime
 
 `appimage-runtime/` contains the upstream type2-runtime 20251108 source and its

@@ -284,7 +284,7 @@ save-path-invalid = 保存先が不正です
 
 clipboard-input-failed = クリップボード入力を開けません
 
-supported-formats = 対応形式: PNG / JPEG / GIF / BMP / WebP / TIFF / ICO / AVIF / HEIF / HEIC
+supported-formats = 対応形式: PNG / JPEG / GIF / BMP / WebP / TIFF / ICO / AVIF / HEIF / HEIC / PDF
 
 parent-missing = 親フォルダがありません
 
@@ -295,7 +295,7 @@ search-limit = 移動先の検索上限に達しました
 lanczos3 = Lanczos3
 
 cli-help = Nagame
-    使い方: nagame [画像またはフォルダ]
+    使い方: nagame [画像・PDF・フォルダ]
 
     Ctrl+O: 開く | ←/→: 画像送り | +/-: ズーム | F: フィット | 1: 原寸
     R: 右回転 | F11: 全画面 | S: 自動送り | Esc: 停止・全画面解除
@@ -359,3 +359,27 @@ language-system = システムに合わせる
 
 window-state-x11-not-found = NagameのX11ウィンドウが見つかりません
 window-state-directory-missing = ウィンドウ状態の保存先ディレクトリがありません
+
+pdf-library-missing = PDFを表示するためのPDFiumが見つかりません
+pdf-encrypted = パスワードで保護されたPDFは開けません
+pdf-corrupt = PDFとして読み込めません
+pdf-empty = PDFにページがありません
+pdf-page-error = PDFのページを描画できません
+pdf-crashed = PDFの描画処理が異常終了しました
+pdf-timeout = PDFのページの描画が時間内に終わりませんでした
+pdf-io = PDFファイルを読み込めません
+
+pdf-information = ファイル: { $path }
+
+    形式: PDF
+    ファイルサイズ: { $bytes } bytes
+    ページ: { $page } / { $total }
+    ページの寸法: { $page_width } × { $page_height } mm
+    表示画像: { $width } × { $height }（{ $dpi } DPI）
+    ページの種類: { $kind ->
+        [image] 画像主体（埋め込み画像の解像度で描画）
+       *[vector] 文字・図形を含む（表示に合わせて描き直す）
+    }
+    表示ページ数: { $pages }
+
+    画像の書き出しは、回転・見開きを含め、この解像度で描いたページを保存します。

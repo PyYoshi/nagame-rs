@@ -65,10 +65,10 @@ target/dist-linux-x86_64/x86_64-unknown-linux-gnu/release/nagame
 |---|---|
 | `Nagame-0.1.0-x86_64.AppImage` | 実行可能なAppImage |
 | `Nagame-0.1.0-source.tar.gz` | 作業ツリーのスナップショット、Rust依存、同梱ネイティブライブラリのUbuntuソース、ランタイムのソース・再リンク用入力、ライセンス |
-| `build-info.json` | 元コミット、未コミット変更の有無、元バイナリとランタイムのSHA256、同梱ライブラリとソースパッケージの版 |
+| `build-info.json` | 元コミット、未コミット変更の有無、元バイナリとランタイムのSHA256、PDFiumの版・URL・SHA256、同梱ライブラリとソースパッケージの版 |
 | `SHA256SUMS` | 上記3ファイルのSHA256 |
 
-AppDirにはPNGアイコン・desktopファイル・独自のAppRunと、`usr/share/doc/nagame/` のライセンス一覧を含む。ライブラリはUbuntuのものを収集し、AVIFには `libheif-aomdec.so`、HEICには `libheif-libde265.so` を同梱する。`LIBHEIF_PLUGIN_PATH` をAppDir内へ向け、ホスト側やエンコーダーのプラグインを参照しない。glibc・libgcc・libstdc++・Waylandクライアント／カーソルライブラリ・VulkanローダーやGPUドライバーは同梱しない。実行環境にはglibc 2.39以降と対応するC++ランタイム、X11またはWayland、Vulkan環境、フォントが必要。Waylandで起動する場合はホストの `libwayland-client.so.0` と `libwayland-cursor.so.0` を使う。
+AppDirにはPNGアイコン・desktopファイル・独自のAppRunと、`usr/share/doc/nagame/` のライセンス一覧を含む。ライブラリはUbuntuのものを収集し、AVIFには `libheif-aomdec.so`、HEICには `libheif-libde265.so` を同梱する。`LIBHEIF_PLUGIN_PATH` をAppDir内へ向け、ホスト側やエンコーダーのプラグインを参照しない。PDFiumはUbuntuのパッケージではなく、[pdfium.json](../packaging/linux/pdfium.json) で固定した配布物（`tools/fetch_pdfium.py` がSHA256を照合して取得）を `usr/lib/libpdfium.so` に置く。PDFの補助プロセスが実行ファイルから見た `../lib/libpdfium.so` を読み込む。依存はglibcとlibgcc_sだけ。ライセンスは `usr/share/doc/nagame/third-party/pdfium/` にPDFium本体と組み込みの第三者分（FreeType・ICU・libjpeg-turbo・OpenJPEG・LCMS・abseil等）を含める。glibc・libgcc・libstdc++・Waylandクライアント／カーソルライブラリ・VulkanローダーやGPUドライバーは同梱しない。実行環境にはglibc 2.39以降と対応するC++ランタイム、X11またはWayland、Vulkan環境、フォントが必要。Waylandで起動する場合はホストの `libwayland-client.so.0` と `libwayland-cursor.so.0` を使う。
 
 WaylandライブラリはホストのGPUドライバーと揃える。古い `libwayland-client` を同梱すると `LD_LIBRARY_PATH` で優先され、ホストの新しいMesaドライバーが必要とするシンボルを提供できない場合がある。実際に `wl_fixes_interface` が解決できず、GPUIが `NoSupportedDeviceFound` で停止したため、linuxdeployの `--exclude-library libwayland-*.so*` で明示的に除外している。ライブラリ構成を変更する際は、古いUbuntu内の描画テストに加え、新しいホストのドライバーでも検証する。
 
@@ -101,6 +101,8 @@ Nagame独自のコード・素材は [GPL-3.0-or-later](../LICENSE)。第三者�
 
 ソースアーカイブには `cargo vendor --locked` で集めたRust依存と相対パスのCargo設定を含む。Ubuntuのネイティブライブラリは同じ版の `.dsc`・元ソース・Debianパッチを `apt-get source --download-only` で収集する。`vendor/xattr` の修正とMIT/Apacheライセンスも保持する。
 
+PDFiumはBSD-3-Clause／Apache-2.0で、ソースの提供義務はない。Ubuntuのソースパッケージの収集（dpkgの所有パッケージの照合）からは除き、版とSHA256を `build-info.json` に、差し替え方法を `SOURCE.md` に記録する。
+
 [libheifはLGPL-3.0](https://github.com/strukturag/libheif/blob/master/COPYING)。動的リンクのまま同梱する。AppImageを展開すると共有ライブラリを交換してAppRunから実行できる。実行ランタイムには静的なlibfuseも含まれるため、ランタイムのソース・libfuseの入力とパッチ・再リンク手順も提供する。[ランタイム側のライセンス](https://github.com/AppImage/type2-runtime/blob/20251108/LICENSE) を参照。ランタイム用ソース入力のURLとSHA256は [runtime-sources.json](../packaging/linux/runtime-sources.json) に固定している。上流バイナリに使われた全Alpineパッケージの厳密な版や、ビット単位の再現性を主張するものではない。
 
 公開時はAppImageだけでなく、対応するソースアーカイブ・build-info.json・SHA256SUMSを同じリリースに置く。アーカイブ内の [SOURCE.md](../packaging/linux/SOURCE.md) にオフラインのCargoビルドとネイティブライブラリ・ランタイムの差し替え方法を記載している。未コミット状態もローカル検証に使えるが、公開用はコミットを確定して生成し、`build-info.json` の `dirty` が `false` であることを確認する。
@@ -109,9 +111,11 @@ Nagame独自のコード・素材は [GPL-3.0-or-later](../LICENSE)。第三者�
 
 2026-11-07にx86_64 Linuxホストから `just dist-build` と `just dist-test` を実行し、リリースビルドと単体テスト24件が成功した。AVIF/HEICの実コーデックのテストも含む。生成したバイナリの `--help` は同じUbuntuコンテナー内で実行できた。
 
+PDF対応の組み込み後（同日）に、`just dist-test` でPDFの描画テスト（コンテナー内で補助プロセスを起動し、取得済みのPDFiumで合成PDFを描く）を含む単体テストが成功した。`just dist-check-appimage` と `just dist-check-appimage-host` では、同梱した `libpdfium.so` とライセンスの配置、隔離環境（PDFiumなし）とホストのWayland・X11での合成PDFの読み込みを確認した。
+
 `readelf --version-info` でバイナリが要求するGLIBCシンボルの最大版は2.39だった。バイナリに開発ディレクトリの絶対パスが含まれないことも確認した。
 
-AppImageは [Smoke.Containerfile](../packaging/linux/Smoke.Containerfile) のUbuntu 24.04内で確認する。この環境にはシステムのlibheifやプラグインを導入しない。`just dist-check-appimage` は既存の実コーデックテストから8/10bit AVIF/HEICを生成し、AppImageのSHA256、展開・FUSE不要モード、同梱プラグインの構成、Xvfb＋Mesa VulkanでのGUI起動とPNG・AVIF/HEICの読み込み完了を検証する。ピクセル比較・入力操作の回帰テストではなく、配布物の起動とデコードの検証。
+AppImageは [Smoke.Containerfile](../packaging/linux/Smoke.Containerfile) のUbuntu 24.04内で確認する。この環境にはシステムのlibheifやプラグインを導入しない。`just dist-check-appimage` は既存の実コーデックテストから8/10bit AVIF/HEICを生成し、AppImageのSHA256、展開・FUSE不要モード、同梱プラグインの構成、Xvfb＋Mesa VulkanでのGUI起動とPNG・AVIF/HEIC・PDF（スクリプトが生成する1ページの合成PDF）の読み込み完了を検証する。ピクセル比較・入力操作の回帰テストではなく、配布物の起動とデコードの検証。
 
 `just dist-check-appimage-host` は生成済みのAppImageとコーデック検証用画像を使い、利用できるWaylandとX11の両方で、通常のAppImage実行経路（FUSE）からGUI起動と読み込みを確認する。ホストの設定は変更せず、一時的な設定ディレクトリを使う。同梱Waylandライブラリの再混入とVulkanドライバーのシンボル解決エラーも検出する。
 

@@ -10,12 +10,13 @@
 |---|---|---|
 | [main.rs](../src/main.rs) | `Viewer`, `Command`, `main` | 起動、状態の所有、入力の振り分け、非同期結果の反映、描画、GPU画像の退役 |
 | [i18n.rs](../src/i18n.rs) | `tr!`, 共有ローダー | Fluentの翻訳リソース、動的メッセージの引数、英語フォールバック |
-| [model.rs](../src/model.rs) | `Album`, `Viewport`, `supported` | 画像一覧、並び替え、フォルダ探索、倍率・パン計算 |
+| [model.rs](../src/model.rs) | `Album`, `Entry`, `Viewport`, `supported` | 画像とPDFのページの一覧、並び替え、フォルダとPDFの探索、倍率・パン計算 |
+| [pdf/](../src/pdf/mod.rs) | `open`, `render`, `trim`, `Mode`, `Failure`, `helper_main` | PDFの補助プロセス（PDFiumのロード・分類と基準解像度・描画）、本体側の仲介スレッド（優先順位・時間制限・再起動）、記述子付きの通信 |
 | [decoder.rs](../src/decoder.rs) | `Decoded`, `decode_limited`, `GifFrames`, `dimensions` | 形式判定、向き、GIFのフレーム列、libheif、表示画素への変換 |
-| [pipeline.rs](../src/pipeline.rs) | `Loader`, `Request`, `Response`, `Loaded`, `Motion`, `worker` | デコード用ワーカー、世代管理、予算連動のLRU、GIFの逐次デコードの開始、先読み、見開き合成・回転 |
+| [pipeline.rs](../src/pipeline.rs) | `Loader`, `Request`, `Response`, `Loaded`, `PdfPage`, `Motion`, `worker` | デコード用ワーカー、世代管理、予算連動のLRU、GIFの逐次デコードの開始、PDFのページの描画要求、先読み、見開き合成（PDFの倍率合わせ）・回転 |
 | [animation.rs](../src/animation.rs) | `Stream`, `Player`, `Chunk`, `Clip` | GIFの逐次デコードスレッド、チャンク化、全フレーム保持と逐次デコードの切り替え、再生の時刻管理 |
 | [memory.rs](../src/memory.rs) | `Budget`, `Ledger`, `current`, `start_monitor` | メモリー予算、画素データの台帳、メモリー逼迫の検知、glibcの返却設定 |
-| [resample.rs](../src/resample.rs) | `Algorithm`, `State` | 表示専用リサイズのワーカー、要求の集約、古い結果の破棄 |
+| [resample.rs](../src/resample.rs) | `Algorithm`, `State`, `Vector` | 表示専用リサイズのワーカー（文字・図形を含むPDFのページは拡大時に描き直す）、要求の集約、古い結果の破棄 |
 | [settings.rs](../src/settings.rs) | `Settings`, `BoundaryAction`, `SortOrder` | 設定値、既定値、正規化、JSONの読み書き |
 | [window_state.rs](../src/window_state.rs) | `WindowState`, `restore_position` | 通常サイズ・位置・最大化の保存、画面変更時の補正、X11の位置復元 |
 | [settings_ui.rs](../src/settings_ui.rs) | `Tab`, `Field`, `Selector` | 設定の下書き編集、候補一覧、キー割り当ての入力 |
@@ -106,6 +107,21 @@ glibcは大きなブロックの解放後にmmapの閾値を最大32 MiBまで�
 
 最近傍以外のCPU補間では、色とアルファを0〜1へ正規化し、アルファを乗算してから浮動小数点で補間する。補間後はアルファを除算し、色・アルファとも8bitへ戻す。`image` の浮動小数点補間へ0〜255を渡すと値が制限され、画像のアルファがほぼ失われる。回帰テスト `filtered_resize_preserves_opaque_and_translucent_colors` を維持する。ICC色管理やリニアライト補間には対応しない。方式とimage crateの対応は `Algorithm::filter` を参照する。GPUはGPUIのLinear、Nearestは最近傍、LinearはTriangle、CubicはCatmull-Rom、Lanczos3は同名のフィルターを使う。
 
+### PDF
+
+PDFiumは補助プロセス（同じ実行ファイルを `--pdf-helper` で起動し直したもの）だけがロードし、本体はハンドルを持たない。選定理由・決定事項・未決事項は [PDF対応](pdf-support.md) を参照する。
+
+- 本体側は `pdf` の仲介スレッドだけが補助プロセスと通信する。要求は開く・現在ページ・表示解像度・先読みの順に処理し、開く要求以外は種類ごとに最新の1件だけを持つ。呼び出し側は結果か中止まで待ち、中止された未着手の要求は送らない。
+- 本体が開いたPDFの記述子を渡し、補助プロセスはmemfdへBGRAで描いて記述子を返す。本体は寸法・バイト数・memfdの大きさを要求と照合してから1回コピーする。補助プロセスの応答は信頼しない。
+- 補助プロセスは最初のPDFを開くときに起動する。異常終了したら次の要求で起動し直し、同じページ（開く要求は同じ文書）で2回異常終了したら再試行しない。待機中に終わっていた補助プロセス（OOM killer等）はそのページの失敗に数えず、送れなかった要求は起動し直して1回だけ送り直す。1件が20秒を超えたら停止させ、時間切れとして記録する。時間切れのページは先読みと表示解像度の描き直しでは試さず、現在ページと開く要求だけが2回まで試し直す。F5は文書の記録を消す（`pdf::forget`）。
+- 待つ人がいなくなった要求が1秒を超えて描画中で、別の要求が待っていれば、補助プロセスを止めて先へ進む（時間切れには数えない）。応答は50msごとに区切って待ち、その間に届いたメッセージを反映する。メモリーの対応は処理の合間に行う。
+- メモリーはRAMの1/4（1〜4 GiB）を `RLIMIT_DATA` で制限し、本体が終了したら `PR_SET_PDEATHSIG` で終わる。止めた補助プロセスは別のスレッドで回収し、入出力で止まったプロセスで仲介スレッドを止めない。
+- ページの論理寸法（pt）は開くときに全ページ分を取得して `model::Entry` に持たせる。横長判定と見開きの後退はこの値を使い、描画以外でPDFiumを呼ばない。寸法を読めないページは仮の寸法（US Letter）にし、そのページの描画だけを失敗させる。
+- 基準解像度で描いた画像を `Loaded.image` とし、`Loaded.dimensions` が画素寸法と一致する不変条件を保つ。画像主体のページ（1枚の画像がページの90%以上を覆い、見える文字・図形がない）は画像の実効解像度、それ以外は150 DPIとページの半分以上を覆う画像の解像度の大きい方。フォームXObjectの中の画像は、PDFiumがフォームの座標で範囲を返すため、フォームの行列の行列式を掛けてページの面積へ直す。`Budget::still` と1辺16,384に収める。逼迫中に縮めた結果は `PdfPage.reduced` で示し、逼迫が収まった後はキャッシュから使わず描き直す。単独表示のページの保存では、逼迫が収まっていれば `Budget::still` を上限に描き直す（逼迫中は表示中の画像を保存する）。
+- 見開きの2ページは倍率を揃える（`common_scale`）。合成が1辺か `Budget::still` を超えるなら、倍率の差が小さくても揃えて縮める（1ページ表示へ戻さない）。揃えた倍率はキャッシュのキーに含める。逼迫中に上限で縮めた見開きは `reduced` にする。
+- 文字・図形を含む単独表示のページを元画像より2%以上大きく表示するときは、`resample::State` が補間の代わりに補助プロセスへ表示寸法で描かせる（方式の設定とGPU表示によらない）。結果は補間結果と同じく、元画像のIDと要求した寸法が一致するものだけを採用し、保存・コピーには使わない。フィットは `fit_upscale` によらず画面に合わせる（`Viewer::fit_upscale`）。
+- メモリー逼迫の段階1で補助プロセスの文書を閉じさせ、段階2で停止させる。補助プロセスのメモリーは台帳の外で、`NAGAME_PROFILE` のログにRSSを出す。
+
 ### テクスチャの退役
 
 `clear_image`、リサイズ画像の置換、逐次デコードで再生済みになったチャンクは、不要な `Arc<RenderImage>` を `Viewer.retired` へ移す。`render` では即 `window.drop_image` せず、`on_next_frame` を2回経た後で解放する。その時点で元画像・チャンク・補間結果として再利用中のID（`Viewer::live_ids`）と、同じIDの重複は除外する。
@@ -116,7 +132,9 @@ glibcは大きなブロックの解放後にmmapの閾値を最大32 MiBまで�
 
 ## 閲覧状態と入力
 
-`Album` はディレクトリ、並び替え済みのパス一覧、現在位置を保持する。対応拡張子は `supported`、数値順は整数への変換を避ける `natural_cmp` が担う。画像のある前後フォルダへの探索、空も含む同階層の隣接フォルダ、親フォルダは別の操作として実装されている。
+`Album` はディレクトリ、並び替え済みの項目（`Entry`。画像ファイル、またはPDFの1ページ）、現在位置を保持する。対応拡張子は `supported`、数値順は整数への変換を避ける `natural_cmp` が担う。画像のある前後フォルダへの探索、空も含む同階層の隣接フォルダ、親フォルダは別の操作として実装されている。
+
+PDFを開くとアルバムはそのページ列になり（`document`、`directory` はPDFのパス）、並べ替えない。フォルダの探索（`directories`）はサブフォルダとPDFを同格の入れ物として自然順に並べ、開けないPDFは画像がある前後のフォルダへの移動では飛ばす。同階層の隣接移動で開けないPDFに当たったら、空の一覧（`Album.failure` に理由）として移ってエラーを示し、次の移動でその先へ進める。フォルダの画像一覧にはPDFを含めない。利用者が画像のないフォルダを選んだ場合だけ、先頭のPDFを開く（`Album::open_selected`）。保存先・「フォルダを開く」は `Album::location`（PDFならそのフォルダ）を使う。見開きの先読みは次の見開き（2ページ先から2枚）と前の2枚。
 
 画像送りでフォルダ境界を越えるときは `Viewer::continue_to_folder` を使い、前方向は移動先の末尾、次方向は先頭を選ぶ。自動移動と確認ダイアログの `Command::BoundaryFolder` はこの経路を共有する。`previous_folder_first` は `PreviousFolder`・`PreviousSibling` の直接操作だけに適用する。どちらも移動先をソートした後で位置を決めるため、逆順にも対応する。
 

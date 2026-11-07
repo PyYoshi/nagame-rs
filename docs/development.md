@@ -13,6 +13,8 @@ cargo build --locked
 cargo run --locked --release -- /path/to/images
 ```
 
+PDFの表示とテストには、固定版のPDFiumが必要。`just pdfium`（`python3 tools/fetch_pdfium.py`）が [pdfium.json](../packaging/linux/pdfium.json) の版を取得し、SHA256を照合して `target/pdfium/` へ展開する。`gh` があれば出所の証明（attestation）も検証する。版を更新するときは `--require-attestation` で証明の検証を必須にする。`cargo run` と `cargo test` には [.cargo/config.toml](../.cargo/config.toml) が `NAGAME_PDFIUM_LIBRARY` を設定する。`./target/debug/nagame` を直接起動してPDFを開く場合は、同じ環境変数に `target/pdfium/chromium-8125/lib/libpdfium.so` の絶対パスを渡す。PDFiumは補助プロセス（`nagame --pdf-helper`）だけがロードする。設計は [PDF対応](pdf-support.md) を参照。
+
 ## 開発ツールと秘密情報の検査
 
 開発用CLIは [aqua](https://aquaproj.github.io/) で管理する。aquaが未導入の場合は [公式の導入手順](https://aquaproj.github.io/docs/install) に従い、`aqua` をPATHから実行できるようにする。この環境ではaqua 2.65.2で確認した。
@@ -107,6 +109,7 @@ cargo tree --locked -i xattr
 | 操作の追加、キー割り当て | `main.rs` の `Command` / `command` / `shortcut_command`、`bindings.rs` の `Shortcut` / `defaults`、`menu_ui.rs` |
 | 設定の追加 | `settings.rs` のフィールド・既定値・`normalize`、`settings_ui.rs` の `Field` / タブ / 表示・編集処理、`main.rs` の適用処理 |
 | 入力形式の追加 | `model.rs::supported`、`decoder.rs` のデコードと `dimensions`、実コーデックのテスト |
+| PDF | `pdf/mod.rs`（公開API・仲介スレッド・補助プロセスの起動と再起動・応答の検査）、`pdf/helper.rs`（PDFium・分類と基準解像度・memfdへの描画）、`pdf/ipc.rs`、`model.rs` の `Entry` / `Album::open_document` / `directories`、`pipeline.rs` の `render_page` / `common_scale`、`resample.rs` の `redraw` |
 | 出力形式の追加 | `viewer_io.rs` の形式許可・エンコード・RGBA変換、保存失敗時の既存ファイル保持テスト |
 | 画像送り・フォルダ移動 | `model.rs::Album`、`main.rs` の境界処理・見開きのページ送り、`pipeline.rs` の合成 |
 | 補間・GPU画像の寿命 | `resample.rs`、`main.rs` の `clear_image` / `render` / `live_ids`、`ui_smoke.rs` |
@@ -128,16 +131,19 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo build --locked
 ```
 
+`cargo test` のPDFのテストは、合成PDFを補助プロセスで実際に描く。先に `just pdfium` を実行する。PDFiumがない場合はスキップせず失敗する。テストでは、テストバイナリーの `pdf::tests::helper_process` を補助プロセスとして起動し直す。テストは仲介スレッドを共有するため、先読みの種類を使うテストは `pdf::PREFETCH_TESTS` で順番に動かす（同じ種類の要求は最新の1件に置き換わる）。時間切れのテストは制限時間をテスト用の3秒にして確かめる。
+
 テストは各モジュール内の `#[cfg(test)] mod tests` にある。実装上の理由と確認対象を対応させ、既存の回帰テストを維持する。
 
 | 対象 | 主な検証内容 |
 |---|---|
 | `i18n` | Fluentの構文と重複、両言語のキー集合、全メッセージの整形、OS言語の対応付け、単数・複数形、英語へのフォールバック、並行呼び出し、利用者の文字列の保持 |
-| `model` | 数値順、空一覧、選択の維持、フォルダ探索、倍率とパン |
+| `model` | 数値順、空一覧、選択の維持、フォルダ探索、倍率とパン、PDFのページ列（文書順・並べ替えない）、見開きの先読み、PDFを入れ物とする探索（開けないPDFを飛ばす・隣接移動ではエラー）、PDFだけのフォルダ |
+| `pdf` | 回転とCropBoxを反映した寸法、BGRA・白背景・`/Rotate`、画像主体の判定（不可視テキストを除く）と基準解像度、上限での縮小、指定倍率、暗号化・破損・0ページ・範囲外のページ、PDFiumを読み込めない補助プロセス、異常終了からの再起動と再試行の上限、制限時間と時間切れの記録・F5での消去、待つ人がいない長い描画の中断、メモリー上限、待つのをやめた要求、要求の優先順位と置き換え、フォームXObjectで包んだスキャン |
 | `decoder` | BGRAと回転、JPE、破損ファイル、GIFの時間・回転・遅延0の保持・1フレームの上限・先頭フレームのみ・中止、実AVIF/HEIC |
 | `animation` | 遅延の丸め、全フレーム保持（チャンクの大きさ、ループで再デコードしない）、予算超過時の逐次デコード（ループをまたぐ順序、先読みの上限、再生済みチャンクの退役）、保持の試みのペース制御、逼迫時の打ち切り、保持中からの逐次デコードへの移行、先頭前のデコード失敗 |
 | `memory` | 予算の導出と下限・上限、OS情報で下げるだけの計算、meminfo・cgroupの解析と祖先の制限、台帳の重複除外、PSI通知の確認条件 |
-| `pipeline` | キャッシュ再利用とファイル更新、見開きの左右・横長・回転、幅0のページの拒否とワーカーの継続、Viewerの保持量に応じたキャッシュの縮小と重複の数え方、GIFの逐次デコード→全フレーム保持の登録→再訪時の再利用、見開きのGIFページとのキーの区別 |
+| `pipeline` | PDFのページの基準解像度・先読みのキャッシュ・見開きの倍率合わせ（上限での縮小を含む）・逼迫中に縮めたページの描き直し、キャッシュ再利用とファイル更新、見開きの左右・横長・回転、幅0のページの拒否とワーカーの継続、Viewerの保持量に応じたキャッシュの縮小と重複の数え方、GIFの逐次デコード→全フレーム保持の登録→再訪時の再利用、見開きのGIFページとのキーの区別 |
 | `resample` | 古い結果の破棄、上限時のGPU復帰（全フレーム合計）、画像集合の一括補間と順序、最近傍、透明な縁、不透明・半透明の色とアルファ |
 | `settings` | 保存・再読み込み、古いファイルの既定値補完、メモリー上限の正規化、破損JSON |
 | `settings_ui` | メモリー上限の候補の循環、手書きの値の保持、表示 |
@@ -158,7 +164,7 @@ python3 tools/check_ui.py
 cargo build --locked
 ```
 
-スクリプトは一時ディレクトリに生成画像と設定を置き、ウィンドウのサイズ・位置（X11）・最大化・全画面と再起動、1,400回の画像送り、設定のキャンセル・保存・再起動、言語切替、セレクター、キー変更、見開き・横長ページ・読む方向、補間後のアルファと色、正常終了を検証する。GIF（`NAGAME_UI_ANIMATION`）では、全フレーム保持の再生、全チャンクの最近傍補間、予算を小さくした逐次デコード（ループをまたぐ再生と保持量の上限）、全保持・逐次デコードそれぞれでGIFとPNGを混ぜた240回の画像送り、逼迫時の削減（`memory::signal_pressure`）を検証する。GIFはアプリ内で生成し、予算は `memory::override_budget` で差し替える。実ウィンドウを描画するが、キーイベントは `ui_smoke.rs` がアプリ内へ配信する。OSからのマウス・DnD・外部アプリへの貼り付けは下記の手動回帰確認で扱う。
+スクリプトは一時ディレクトリに生成画像と設定を置き、ウィンドウのサイズ・位置（X11）・最大化・全画面と再起動、1,400回の画像送り、設定のキャンセル・保存・再起動、言語切替、セレクター、キー変更、見開き・横長ページ・読む方向、補間後のアルファと色、正常終了を検証する。GIF（`NAGAME_UI_ANIMATION`）では、全フレーム保持の再生、全チャンクの最近傍補間、予算を小さくした逐次デコード（ループをまたぐ再生と保持量の上限）、全保持・逐次デコードそれぞれでGIFとPNGを混ぜた240回の画像送り、逼迫時の削減（`memory::signal_pressure`）を検証する。GIFはアプリ内で生成し、予算は `memory::override_budget` で差し替える。PDF（`NAGAME_UI_PDF`）では、合成した240ページのPDFで、文字のページのフィット（設定によらず拡大）、原寸より拡大したときの表示解像度での描き直し、200回のページ送り、倍率を揃えた見開き、2回の逼迫で補助プロセスを止めた後の回復、フォームXObjectで包んだスキャンの解像度、最終ページから同じフォルダの次のPDFへの移動を検証する。`check_ui.py` は `NAGAME_PDFIUM_LIBRARY` がなければ `tools/fetch_pdfium.py` で取得したPDFiumを渡す。実ウィンドウを描画するが、キーイベントは `ui_smoke.rs` がアプリ内へ配信する。OSからのマウス・DnD・外部アプリへの貼り付けは下記の手動回帰確認で扱う。
 
 画像送りでのフォルダ境界移動と「前のフォルダ」／「前の同階層フォルダ」の直接操作も分けて検証する。先頭を開く設定のON/OFF、正順／逆順、自動移動／確認ダイアログの組み合わせで、画像送りは前フォルダの末尾・次フォルダの先頭、直接操作は設定通りの画像を選ぶことを確認する。
 
@@ -188,6 +194,7 @@ python3 tools/check_ui.py --window-state-only --wayland
 | セレクター | 候補のクリック決定、Esc／外側クリックで未確定候補を破棄、画面下部でも一覧が切れないこと |
 | マンガ | 縦2枚→横1枚→縦2枚の前進・後退、RTL/LTR、横長単独表示、合成上限時の1ページ表示 |
 | 表示補間 | 小さなピクセル画像の拡大と写真の縮小、最近傍とフィルターの差、不透明・半透明画像の色とアルファ |
+| PDF | スキャンした本・文字のPDFの表示とページ送り、巻ごとのPDFの連続、見開き、拡大時の描き直し、非埋め込みの日本語、暗号化・破損PDFのエラー、情報画面、保存の既定名と画素数 |
 | 外部出力 | 回転・見開き後の保存と再読込、GIFの時間（全保持・逐次デコード中の両方）、JPEの入出力、外部アプリへの画像／パス貼り付け、フォルダを開く操作 |
 
 直近の実機確認では、X11の画像表示・画像送り・フォルダ移動・画像端の選択を確認済み。全項目を手動検証済みではなく、実マウスによるスクロールバー・セレクター、OSからのDnD、外部アプリへの画像貼り付けは未確認として残る。
@@ -197,7 +204,7 @@ python3 tools/check_ui.py --window-state-only --wayland
 ```sh
 # GUIなし：ヘッダー取得、デコード・向き・BGRA変換の時間
 cargo run --locked --bin decode-bench -- /path/to/image.jpg /path/to/image.png
-# GUIあり：読み込み時間、キャッシュヒット、保持量・予算・GIFの保持方式、逼迫への対応
+# GUIあり：読み込み時間、キャッシュヒット、保持量・予算・PDFの補助プロセスのRSS・GIFの保持方式、逼迫への対応
 NAGAME_PROFILE=1 ./target/debug/nagame /path/to/image.jpg
 # 実ウィンドウ（ui-smokeビルド）：画像を順に開き、1秒ごとのRSS・CPU・保持量・予算・保持方式を出す
 NAGAME_UI_SMOKE=1 NAGAME_UI_MEMORY_PROFILE='/path/a.gif:/path/b.png@10' ./target/debug/nagame /path/b.png
@@ -206,6 +213,8 @@ NAGAME_UI_SMOKE=1 NAGAME_UI_MEMORY_PROFILE='/path/a.gif:/path/b.png@10' ./target
 `@秒数` は1枚あたりの計測時間（既定6秒）。パスの代わりに `pressure` を書くと、表示中の画像のままメモリー逼迫を2回通知し、解放量を計測する。`check_ui.py` と同じく、X11で計測する場合は `WAYLAND_DISPLAY` を外して起動する。CPUは時間ベースのため、断続的なデコードではクロックが下がり実際の仕事量より大きく出る。X11の `import` で取ったウィンドウ画像はVulkanの表示内容より古い場合がある。描画の確認にはWaylandで起動してspectacle等で撮る。
 
 直近の計測（Nobara、RAM 54 GiB、自動予算2 GiB、開発ビルド）：1280×720・150フレーム（展開527 MiB）のGIFは全フレーム保持でRSS約600 MiB、再生中のCPU約4%。1920×1080・160フレーム（1.27 GiB）は保持の試みが約1 GiBで逐次デコードへ移り、以後の保持量は約50〜100 MiB、デコードスレッドのCPUは約34%（10fps）。別の画像へ移るとRSSはすぐ下がった。
+
+PDF（同じ環境、`check_ui.py` の合成PDF）：A4の文字ページ（150 DPIで1240×1754）と300 DPIのスキャン（600×800）を交互に並べた240ページで、200回のページ送りが約2.2秒。直後の本体のRSSは約110 MiB、補助プロセスのRSSは約150 MiB（PDFiumの文書・フォント・画像のキャッシュを含む）。
 
 デコード計測にはGPUアップロードや描画時間を含まない。GUIログの `cached=true` はデコード済みキャッシュのヒットであり、`0 ms` はミリ秒単位の丸め。入力から画面表示まで0msという意味ではない。比較するときは同じ画像・ビルドプロファイル・コーデック環境で複数回測り、キャッシュの有無を分ける。
 

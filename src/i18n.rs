@@ -103,6 +103,40 @@ pub struct ImageInformation<'a> {
     pub pages: usize,
 }
 
+/// 情報画面に出す、PDFのページの情報。
+pub struct PdfInformation<'a> {
+    pub path: &'a std::path::Path,
+    pub bytes: u64,
+    /// 1から数えたページ番号と総ページ数。
+    pub page: usize,
+    pub total: usize,
+    /// ページの論理寸法（pt）。
+    pub size: [f32; 2],
+    pub displayed: [f32; 2],
+    /// 基準解像度。
+    pub dpi: f32,
+    pub vector: bool,
+    pub pages: usize,
+}
+
+pub fn pdf_information(info: PdfInformation<'_>) -> String {
+    let millimeters = |points: f32| format!("{:.1}", points / 72. * 25.4);
+    tr!(
+        "pdf-information",
+        path = info.path.display().to_string(),
+        bytes = info.bytes,
+        page = info.page,
+        total = info.total,
+        page_width = millimeters(info.size[0]),
+        page_height = millimeters(info.size[1]),
+        width = info.displayed[0],
+        height = info.displayed[1],
+        dpi = format!("{:.0}", info.dpi),
+        kind = if info.vector { "vector" } else { "image" },
+        pages = info.pages
+    )
+}
+
 /// ステータスバーに出す、表示中の画像の状態。
 pub struct ImageStatus<'a> {
     pub page_range: &'a str,
@@ -245,6 +279,7 @@ mod tests {
                 "original_height",
                 "width",
                 "height",
+                "page",
             ] {
                 args.set(key, 2);
             }
@@ -258,10 +293,14 @@ mod tests {
                 "percent",
                 "filename",
                 "limit",
+                "page_width",
+                "page_height",
+                "dpi",
             ] {
                 args.set(key, "test {literal}");
             }
             args.set("mode", "normal");
+            args.set("kind", "image");
             for entry in syntax.body {
                 if let fluent_syntax::ast::Entry::Message(message) = entry {
                     let id = message.id.name;
@@ -282,6 +321,7 @@ mod tests {
                 include_str!("decoder.rs"),
                 include_str!("menu_ui.rs"),
                 include_str!("model.rs"),
+                include_str!("pdf/mod.rs"),
                 include_str!("pipeline.rs"),
                 include_str!("resample.rs"),
                 include_str!("settings.rs"),

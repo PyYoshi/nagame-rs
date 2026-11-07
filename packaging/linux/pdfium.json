@@ -1,0 +1,7 @@
+{
+  "version": "158.0.8125.0",
+  "tag": "chromium/8125",
+  "archive": "pdfium-linux-x64.tgz",
+  "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8125/pdfium-linux-x64.tgz",
+  "sha256": "e1c3ce6e270cb5e0c20816b379ad9f2c1309972697c505f508de92bf5e7d6659"
+}

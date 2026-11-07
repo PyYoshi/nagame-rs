@@ -1,9 +1,11 @@
 //! デコード済み画像の予算連動LRU、単一のワーカー、アニメーションの逐次デコードの開始、
-//! 前後の画像の先読み。
+//! 前後の画像の先読み。PDFのページは補助プロセスで描き、通常の画像と同じく扱う。
 use crate::animation::{self, Clip, Stream};
 use crate::decoder;
 use crate::i18n::tr;
 use crate::memory::{self, Budget, Holder, Ledger};
+use crate::model::Entry;
+use crate::pdf;
 use gpui::{ImageId, RenderImage};
 use std::{
     collections::{HashSet, VecDeque},
@@ -21,20 +23,25 @@ const CACHE_ENTRIES: usize = 8;
 #[derive(Clone, PartialEq, Eq)]
 struct Key {
     path: PathBuf,
+    /// PDFのページ番号。
+    page: Option<u32>,
     turns: u8,
     modified: Option<SystemTime>,
     size: u64,
-    second: Option<(PathBuf, Option<SystemTime>, u64)>,
+    second: Option<(PathBuf, Option<u32>, Option<SystemTime>, u64)>,
     rtl: bool,
     landscape_single: bool,
     /// GIFの先頭フレームだけの静止画（見開きのページ）。アニメーションの結果と区別する。
     first_frame: bool,
+    /// 見開きで揃えたPDFの倍率（f32のビット列）。基準解像度ならNone。
+    scale: Option<u32>,
 }
 impl Key {
-    fn new(path: PathBuf, turns: u8) -> Self {
-        let meta = std::fs::metadata(&path).ok();
+    fn new(entry: &Entry, turns: u8) -> Self {
+        let meta = std::fs::metadata(&entry.path).ok();
         Self {
-            path,
+            path: entry.path.clone(),
+            page: entry.page.map(|page| page.index),
             turns,
             modified: meta.as_ref().and_then(|m| m.modified().ok()),
             size: meta.map(|m| m.len()).unwrap_or(0),
@@ -42,15 +49,82 @@ impl Key {
             rtl: false,
             landscape_single: false,
             first_frame: false,
+            scale: None,
         }
     }
     /// 見開きのページ。GIFは先頭フレームだけを静止画として使う。
-    fn page(path: PathBuf, gif: bool) -> Self {
+    fn page(entry: &Entry, gif: bool) -> Self {
         Self {
             first_frame: gif,
-            ..Self::new(path, 0)
+            ..Self::new(entry, 0)
         }
     }
+}
+
+/// PDFのページから描いた画像。見開きの合成結果では両ページの情報をまとめる。
+#[derive(Clone, Debug)]
+pub struct PdfPage {
+    pub path: PathBuf,
+    pub page: u32,
+    /// ページの論理寸法（pt）。
+    pub size: [f32; 2],
+    /// 1ptあたりの画素数。
+    pub scale: f32,
+    /// 文字・図形を含むページ。固有の画素寸法がないため、表示に合わせて描き直す。
+    pub vector: bool,
+    /// メモリー逼迫中に予算に合わせて縮めた。逼迫が収まった後の再表示で描き直す。
+    pub reduced: bool,
+}
+
+/// 逼迫中に縮めたPDFのページで、もう逼迫していない。キャッシュから使わず描き直す。
+fn stale(loaded: &Loaded) -> bool {
+    loaded.pdf.as_ref().is_some_and(|pdf| pdf.reduced) && !memory::under_pressure()
+}
+
+/// PDFのページを補助プロセスで描く。
+fn render_page(
+    entry: &Entry,
+    mode: pdf::Mode,
+    class: pdf::Class,
+    cancelled: impl Fn() -> bool,
+) -> Result<Arc<Loaded>, String> {
+    let page = entry.page.ok_or(tr!("pdf-page-error"))?;
+    let pressure = memory::under_pressure();
+    let rendered = pdf::render(&entry.path, page.index, mode, class, cancelled)
+        .map_err(pdf::Failure::message)?;
+    let (width, height) = rendered.pixels.dimensions();
+    let mut loaded = Loaded::from_decoded(decoder::Decoded {
+        frames: vec![image::Frame::new(rendered.pixels)],
+        dimensions: [width as f32, height as f32],
+    });
+    Arc::get_mut(&mut loaded).unwrap().pdf = Some(PdfPage {
+        path: entry.path.clone(),
+        page: page.index,
+        size: page.size,
+        scale: rendered.scale,
+        vector: rendered.vector,
+        reduced: rendered.limited && pressure,
+    });
+    Ok(loaded)
+}
+
+/// 見開きの2ページ（PDF）の倍率を揃える。倍率が違うか、合成すると1辺かlimitを超えるとき、
+/// 揃えた倍率とlimitで縮めたかを返す。倍率の差が5%未満で上限にも収まればNone。
+fn common_scale(first: &Loaded, second: &Loaded, limit: u64) -> Option<(f32, bool)> {
+    let (a, b) = (first.pdf.as_ref()?, second.pdf.as_ref()?);
+    let width = a.size[0] + b.size[0];
+    let height = a.size[1].max(b.size[1]);
+    let side = pdf::MAX_SIDE as f32 * 0.99;
+    let wanted = a.scale.max(b.scale);
+    let mut scale = wanted.min(side / width).min(side / height);
+    let bytes = (width * scale).ceil() as f64 * (height * scale).ceil() as f64 * 4.;
+    let limited = bytes > limit as f64;
+    if limited {
+        scale *= (limit as f64 / bytes).sqrt() as f32 * 0.99;
+    }
+    // 上限で縮めたら、差が小さくても必ず描き直す（合成が上限を超えて1ページへ戻らないように）。
+    let close = |value: f32| (value / scale - 1.).abs() < 0.05;
+    (scale < wanted || !(close(a.scale) && close(b.scale))).then_some((scale, limited))
 }
 
 /// 表示するアニメーション。全フレームを保持したClipか、デコード中のStream。
@@ -74,6 +148,8 @@ pub struct Loaded {
     pub bytes: u64,
     pub pages: usize,
     pub animation: Option<Animation>,
+    /// PDFのページから描いた画像。
+    pub pdf: Option<PdfPage>,
 }
 impl Loaded {
     fn from_decoded(decoded: decoder::Decoded) -> Arc<Self> {
@@ -84,6 +160,7 @@ impl Loaded {
             dimensions: decoded.dimensions,
             pages: 1,
             animation: None,
+            pdf: None,
         })
     }
     fn animated(chunk: &animation::Chunk, animation: Animation, bytes: u64) -> Arc<Self> {
@@ -94,6 +171,7 @@ impl Loaded {
             bytes,
             pages: 1,
             animation: Some(animation),
+            pdf: None,
         })
     }
     /// 保持している画像とその容量。チャンクは先頭の画像と重複し得る。
@@ -112,11 +190,11 @@ impl Loaded {
 /// generationはViewerの選択世代。secondは見開き候補で、必ず合成するとは限らない。
 pub struct Request {
     pub generation: u64,
-    pub path: PathBuf,
+    pub entry: Entry,
     pub turns: u8,
-    pub neighbours: Vec<PathBuf>,
+    pub neighbours: Vec<Entry>,
     pub reload: bool,
-    pub second: Option<PathBuf>,
+    pub second: Option<Entry>,
     pub rtl: bool,
     pub landscape_single: bool,
 }
@@ -299,7 +377,16 @@ fn compose(
         frames: vec![image::Frame::new(pixels)],
         dimensions: [width as f32, height as f32],
     });
-    Arc::get_mut(&mut result).unwrap().pages = 2;
+    let composed = Arc::get_mut(&mut result).unwrap();
+    composed.pages = 2;
+    composed.pdf = match (&first.pdf, &second.pdf) {
+        (Some(a), Some(b)) => Some(PdfPage {
+            vector: a.vector || b.vector,
+            reduced: a.reduced || b.reduced,
+            ..a.clone()
+        }),
+        _ => None,
+    };
     Ok(result)
 }
 /// 静止画と見開きの合成結果に追加回転を反映する。GIFのアニメーションはデコーダーが回転する。
@@ -337,7 +424,9 @@ fn rotate(page: &Arc<Loaded>, turns: u8) -> Result<Arc<Loaded>, String> {
         page.dimensions
     };
     let mut rotated = Loaded::from_decoded(decoder::Decoded { frames, dimensions });
-    Arc::get_mut(&mut rotated).unwrap().pages = page.pages;
+    let result = Arc::get_mut(&mut rotated).unwrap();
+    result.pages = page.pages;
+    result.pdf = page.pdf.clone();
     Ok(rotated)
 }
 
@@ -365,7 +454,7 @@ fn open_animation(
         resident: budget.resident,
         ahead: budget.ahead,
     };
-    let (path, turns) = (request.path.clone(), request.turns);
+    let (path, turns) = (request.entry.path.clone(), request.turns);
     let (store, store_key) = (store.clone(), key.clone());
     let stream = Stream::start(
         path.clone(),
@@ -397,7 +486,7 @@ fn open_animation(
         Loaded::animated(
             &chunk,
             Animation {
-                path: request.path.clone(),
+                path: request.entry.path.clone(),
                 turns: request.turns,
                 motion: Motion::Stream(stream),
             },
@@ -442,60 +531,111 @@ pub fn worker(ledger: Arc<Ledger>) -> (Loader, mpsc::Receiver<Response>) {
             let start = Instant::now();
             let budget = memory::current(ledger.held());
             let cancelled = || cancellation.load(Ordering::Relaxed) != request.generation;
-            let mut key = Key::new(request.path.clone(), request.turns);
+            let mut key = Key::new(&request.entry, request.turns);
             key.rtl = request.second.is_some() && request.rtl;
             key.landscape_single = request.second.is_some() && request.landscape_single;
-            key.second = request.second.as_ref().map(|path| {
-                let page = Key::new(path.clone(), 0);
-                (page.path, page.modified, page.size)
+            key.second = request.second.as_ref().map(|entry| {
+                let page = Key::new(entry, 0);
+                (page.path, page.page, page.modified, page.size)
             });
             let cached = if request.reload {
                 None
             } else {
-                cache.get(&key)
+                cache.get(&key).filter(|loaded| !stale(loaded))
             };
             let hit = cached.is_some();
             let result = if let Some(image) = cached {
                 Ok(image)
-            } else if request.second.is_none() && decoder::is_gif(&request.path) {
+            } else if request.second.is_none()
+                && request.entry.page.is_none()
+                && decoder::is_gif(&request.entry.path)
+            {
                 match open_animation(&request, &key, &budget, &store, &mut previous, cancelled) {
                     Some(result) => result,
                     None => continue,
                 }
             } else {
                 (|| {
-                    let page = |path: &PathBuf, cache: &mut Cache| {
-                        let gif = request.second.is_some() && decoder::is_gif(path);
-                        let key = Key::page(path.clone(), gif);
-                        if let Some(page) = (!request.reload).then(|| cache.get(&key)).flatten() {
+                    // scaleは見開きで揃えたPDFの倍率。Noneなら基準解像度で描く。
+                    let page = |entry: &Entry, scale: Option<f32>, cache: &mut Cache| {
+                        let gif = request.second.is_some()
+                            && entry.page.is_none()
+                            && decoder::is_gif(&entry.path);
+                        let mut key = Key::page(entry, gif);
+                        key.scale = scale.map(f32::to_bits);
+                        if let Some(page) = (!request.reload)
+                            .then(|| cache.get(&key))
+                            .flatten()
+                            .filter(|page| !stale(page))
+                        {
                             return Ok(page);
                         }
-                        let page = Loaded::from_decoded(decoder::decode_limited(
-                            path,
-                            0,
-                            budget.still,
-                            false,
-                            cancelled,
-                        )?);
+                        let page = if entry.page.is_some() {
+                            let mode = match scale {
+                                Some(scale) => pdf::Mode::Scale {
+                                    scale,
+                                    limit: budget.still,
+                                },
+                                None => pdf::Mode::Base {
+                                    limit: budget.still,
+                                },
+                            };
+                            render_page(entry, mode, pdf::Class::Current, cancelled)?
+                        } else {
+                            Loaded::from_decoded(decoder::decode_limited(
+                                &entry.path,
+                                0,
+                                budget.still,
+                                false,
+                                cancelled,
+                            )?)
+                        };
                         cache.insert(key, page.clone(), &budget);
                         Ok::<_, String>(page)
                     };
-                    let first = page(&request.path, &mut cache)?;
-                    let loaded = if let Some(second_path) = &request.second {
+                    let first = page(&request.entry, None, &mut cache)?;
+                    let loaded = if let Some(second_entry) = &request.second {
                         if request.landscape_single
                             && (first.dimensions[0] > first.dimensions[1]
-                                || decoder::dimensions(second_path).is_ok_and(|[w, h]| w > h))
+                                || second_entry.proportions().is_ok_and(|[w, h]| w > h))
                         {
                             first
                         } else {
-                            let second = page(second_path, &mut cache)?;
-                            compose(
+                            let mut first = first;
+                            let mut second = page(second_entry, None, &mut cache)?;
+                            let mut limited = false;
+                            if let Some((scale, clamped)) =
+                                common_scale(&first, &second, budget.still)
+                            {
+                                limited = clamped;
+                                let differs = |page: &Loaded| {
+                                    page.pdf
+                                        .as_ref()
+                                        .is_some_and(|pdf| (pdf.scale / scale - 1.).abs() > 0.005)
+                                };
+                                if differs(&first) {
+                                    first = page(&request.entry, Some(scale), &mut cache)?;
+                                }
+                                if differs(&second) {
+                                    second = page(second_entry, Some(scale), &mut cache)?;
+                                }
+                            }
+                            let mut composed = compose(
                                 &first,
                                 &second,
                                 request.rtl,
                                 request.landscape_single,
                                 budget.still,
-                            )?
+                            )?;
+                            // 逼迫で下がった上限に合わせて縮めた見開きは、逼迫の後に描き直す。
+                            if limited
+                                && memory::under_pressure()
+                                && let Some(pdf) =
+                                    Arc::get_mut(&mut composed).and_then(|c| c.pdf.as_mut())
+                            {
+                                pdf.reduced = true;
+                            }
+                            composed
                         }
                     } else {
                         first
@@ -522,23 +662,36 @@ pub fn worker(ledger: Arc<Ledger>) -> (Loader, mpsc::Receiver<Response>) {
             {
                 break;
             }
-            for path in request.neighbours {
+            for entry in request.neighbours {
                 if cancelled() || memory::under_pressure() {
                     break;
                 }
                 // アニメーションは先読みしない。再生しながらデコードする。
-                if decoder::is_gif(&path) {
+                if entry.page.is_none() && decoder::is_gif(&entry.path) {
                     continue;
                 }
-                let key = Key::new(path, 0);
-                if cache.get(&key).is_some() {
+                let key = Key::new(&entry, 0);
+                if cache.get(&key).is_some_and(|loaded| !stale(&loaded)) {
                     continue;
                 }
                 let budget = memory::current(ledger.held());
-                if let Ok(decoded) =
-                    decoder::decode_limited(&key.path, 0, budget.still, false, || false)
-                {
-                    cache.insert(key, Loaded::from_decoded(decoded), &budget);
+                let loaded = if entry.page.is_some() {
+                    render_page(
+                        &entry,
+                        pdf::Mode::Base {
+                            limit: budget.still,
+                        },
+                        pdf::Class::Prefetch,
+                        cancelled,
+                    )
+                    .ok()
+                } else {
+                    decoder::decode_limited(&entry.path, 0, budget.still, false, || false)
+                        .ok()
+                        .map(Loaded::from_decoded)
+                };
+                if let Some(loaded) = loaded {
+                    cache.insert(key, loaded, &budget);
                 }
             }
         }
@@ -556,7 +709,7 @@ mod tests {
         let (loader, results) = worker(Default::default());
         let request = |generation| Request {
             generation,
-            path: path.clone(),
+            entry: Entry::file(path.clone()),
             turns: 0,
             neighbours: vec![],
             reload: false,
@@ -607,14 +760,14 @@ mod memory_tests {
         let images: Vec<_> = (0..3).map(|_| still(1024, 1024)).collect();
         for (i, image) in images.iter().enumerate() {
             cache.insert(
-                Key::new(format!("/missing/{i}.png").into(), 0),
+                Key::new(&Entry::file(format!("/missing/{i}.png").into()), 0),
                 image.clone(),
                 &budget,
             );
         }
         // 同じ画像を別のキーでも持つ（例えば単独表示に戻った見開き）。
         cache.insert(
-            Key::new("/missing/alias.png".into(), 0),
+            Key::new(&Entry::file("/missing/alias.png".into()), 0),
             images[2].clone(),
             &budget,
         );
@@ -650,7 +803,11 @@ mod memory_tests {
         // 68 MiBなので、二重に数えると128 MiBの予算に60 MiBしか残らず、入らなくなる。
         let big = still(4096, 4352);
         ledger.replace(Holder::Viewer, [(big.image.id, big.bytes)]);
-        cache.insert(Key::new("/missing/big.png".into(), 0), big.clone(), &budget);
+        cache.insert(
+            Key::new(&Entry::file("/missing/big.png".into()), 0),
+            big.clone(),
+            &budget,
+        );
         assert!(
             cache.entries.iter().any(|(_, l)| Arc::ptr_eq(l, &big)),
             "a {} MiB image fits a {} MiB budget",
@@ -683,11 +840,11 @@ mod memory_tests {
         let (loader, results) = worker(Default::default());
         let request = |generation, path: &str, second: Option<&str>| Request {
             generation,
-            path: root.join(path),
+            entry: Entry::file(root.join(path)),
             turns: 0,
             neighbours: vec![],
             reload: false,
-            second: second.map(|name| root.join(name)),
+            second: second.map(|name| Entry::file(root.join(name))),
             rtl: false,
             landscape_single: false,
         };
@@ -767,11 +924,11 @@ mod manga_tests {
         let (loader, results) = worker(Default::default());
         let request = |generation, second, turns, landscape_single| Request {
             generation,
-            path: root.join("red.png"),
+            entry: Entry::file(root.join("red.png")),
             turns,
             neighbours: vec![],
             reload: false,
-            second: Some(root.join(second)),
+            second: Some(Entry::file(root.join(second))),
             rtl: true,
             landscape_single,
         };
@@ -835,11 +992,11 @@ mod manga_tests {
         let (loader, results) = worker(Default::default());
         let request = |generation, second: Option<&str>| Request {
             generation,
-            path: root.join("page.png"),
+            entry: Entry::file(root.join("page.png")),
             turns: 0,
             neighbours: vec![],
             reload: false,
-            second: second.map(|name| root.join(name)),
+            second: second.map(|name| Entry::file(root.join(name))),
             rtl: false,
             landscape_single: false,
         };
@@ -854,5 +1011,144 @@ mod manga_tests {
             .unwrap();
         assert_eq!(next.result.unwrap().dimensions, [4., 6.]);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod pdf_tests {
+    use super::*;
+    use crate::model::{Album, Entry};
+    use crate::pdf::synthetic::{Item, Page, pdf};
+    use std::time::Duration;
+
+    fn request(generation: u64, entry: Entry, second: Option<Entry>) -> Request {
+        Request {
+            generation,
+            entry,
+            turns: 0,
+            neighbours: vec![],
+            reload: false,
+            second,
+            rtl: false,
+            landscape_single: false,
+        }
+    }
+
+    #[test]
+    fn pdf_pages_load_at_the_base_resolution_cache_and_align_spread_scales() {
+        // 先読みはPDFの先読みの種類を使い、他のテストの先読みと置き換え合うため順番に動かす。
+        let _serial = pdf::PREFETCH_TESTS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let root = std::env::temp_dir().join(format!("nagame-pdf-pipeline-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("book.pdf");
+        // 1ページ目は300 DPIのスキャン、2ページ目は図形だけ（150 DPI）。同じ大きさのページ。
+        let scan = Page {
+            size: [144., 192.],
+            items: vec![Item::Image {
+                pixels: [600, 800],
+                left: [0, 0, 0],
+                right: [0, 0, 0],
+                rect: [0., 0., 144., 192.],
+            }],
+            ..Page::default()
+        };
+        let drawing = Page {
+            size: [144., 192.],
+            items: vec![Item::Rect {
+                rgb: [0, 0, 255],
+                rect: [0., 0., 10., 10.],
+            }],
+            ..Page::default()
+        };
+        std::fs::write(&path, pdf(&[scan, drawing.clone(), drawing], false)).unwrap();
+        let album = Album::open(&path).unwrap();
+        let (loader, results) = worker(Default::default());
+        let receive = || results.recv_timeout(Duration::from_secs(20)).unwrap();
+
+        let mut single = request(1, album.entries[1].clone(), None);
+        single.neighbours = vec![album.entries[2].clone()];
+        loader.send(single).unwrap();
+        let first = receive();
+        assert!(!first.cached);
+        let loaded = first.result.unwrap();
+        assert_eq!(loaded.dimensions, [300., 400.]);
+        let info = loaded.pdf.as_ref().unwrap();
+        assert!(info.vector && !info.reduced);
+        assert_eq!((info.page, info.size), (1, [144., 192.]));
+        // 先読みしたページはキャッシュから返る。次の要求を送ると先読みは中止されるので、
+        // 描き終わるのを待ってから送る（実際の画像送りも、表示から次の操作までに間がある）。
+        std::thread::sleep(Duration::from_secs(1));
+        loader
+            .send(request(2, album.entries[2].clone(), None))
+            .unwrap();
+        assert!(receive().cached);
+
+        // 見開きは解像度の高いスキャンのページに倍率を揃えて合成する。
+        loader
+            .send(request(
+                3,
+                album.entries[0].clone(),
+                Some(album.entries[1].clone()),
+            ))
+            .unwrap();
+        let spread = receive().result.unwrap();
+        assert_eq!(spread.pages, 2);
+        assert_eq!(spread.dimensions, [1200., 800.]);
+        assert!(spread.pdf.as_ref().unwrap().vector);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn spread_scales_shrink_to_fit_even_when_the_pages_already_match() {
+        let page = |scale: f32| {
+            let mut loaded = Loaded::from_decoded(decoder::Decoded {
+                frames: vec![image::Frame::new(image::RgbaImage::new(1, 1))],
+                dimensions: [1., 1.],
+            });
+            Arc::get_mut(&mut loaded).unwrap().pdf = Some(PdfPage {
+                path: "/book.pdf".into(),
+                page: 0,
+                size: [100., 100.],
+                scale,
+                vector: false,
+                reduced: false,
+            });
+            loaded
+        };
+        // 同じ倍率で上限に収まれば揃え直さない。
+        assert_eq!(common_scale(&page(2.), &page(2.), 1 << 30), None);
+        // 差が5%未満でも、合成（400×200画素、320,000バイト）が上限を超えれば縮める。
+        let (scale, limited) = common_scale(&page(2.), &page(1.95), 300_000).unwrap();
+        assert!(limited && scale < 1.95);
+        assert!((200. * scale).ceil() * (100. * scale).ceil() * 4. <= 300_000.);
+        // 倍率の差が大きければ、高い方へ揃える。
+        assert_eq!(
+            common_scale(&page(4.), &page(2.), 1 << 30),
+            Some((4., false))
+        );
+    }
+
+    #[test]
+    fn pages_reduced_under_memory_pressure_are_redrawn_once_it_ends() {
+        let page = |reduced| {
+            let mut loaded = Loaded::from_decoded(decoder::Decoded {
+                frames: vec![image::Frame::new(image::RgbaImage::new(2, 2))],
+                dimensions: [2., 2.],
+            });
+            Arc::get_mut(&mut loaded).unwrap().pdf = Some(PdfPage {
+                path: "/book.pdf".into(),
+                page: 0,
+                size: [1., 1.],
+                scale: 2.,
+                vector: true,
+                reduced,
+            });
+            loaded
+        };
+        assert!(!memory::under_pressure());
+        assert!(stale(&page(true)));
+        assert!(!stale(&page(false)));
     }
 }

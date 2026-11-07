@@ -58,17 +58,26 @@ def main():
     for plugin in selected_plugins:
         shutil.move(app / 'usr/lib' / plugin.name, app / 'usr/lib/libheif' / plugin.name)
     run('desktop-file-validate', str(app / 'nagame.desktop'))
+    # PDFiumは固定版の配布物（packaging/linux/pdfium.json）。PDFの補助プロセスだけが、
+    # 実行ファイルから見た ../lib/libpdfium.so を絶対パスで読み込む。
+    shutil.copy2('/pdfium/lib/libpdfium.so', app / 'usr/lib/libpdfium.so')
 
     licenses = app / 'usr/share/doc/nagame'
     licenses.mkdir(parents=True)
     shutil.copy2(source / 'LICENSE', licenses / 'LICENSE')
     shutil.copytree(work / 'licenses', licenses / 'third-party')
+    # PDFium本体と、PDFiumに組み込まれた第三者のライセンス。
+    pdfium = licenses / 'third-party/pdfium'
+    shutil.copytree('/pdfium/licenses', pdfium)
+    shutil.copy2('/pdfium/LICENSE', pdfium / 'LICENSE')
+    shutil.copy2('/pdfium/VERSION', pdfium / 'VERSION')
+    shutil.copy2(source / 'packaging/linux/pdfium.json', pdfium / 'pdfium.json')
     native = licenses / 'third-party/native'
     native.mkdir()
     shutil.copytree('/usr/share/common-licenses', native / 'common-licenses')
     packages, files = {}, {}
     for library in (app / 'usr/lib').rglob('*'):
-        if not library.is_file() or library.is_symlink():
+        if not library.is_file() or library.is_symlink() or library.name == 'libpdfium.so':
             continue
         # linuxdeployがstripやRPATHを変える前の、元のファイルから所有パッケージを探す。
         candidates = list(Path('/usr/lib/x86_64-linux-gnu').glob(library.name))

@@ -14,6 +14,25 @@ import time
 from check_ui import png
 
 
+def pdf(path):
+    """赤い長方形を描いた1ページのPDFを書く（同梱したPDFiumでの描画の確認用）。"""
+    content = b'1 0 0 rg 20 20 160 100 re f'
+    objects = [b'<< /Type /Catalog /Pages 2 0 R >>',
+               b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+               b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 140] /Contents 4 0 R >>',
+               b'<< /Length %d >>\nstream\n%s\nendstream' % (len(content), content)]
+    output = bytearray(b'%PDF-1.7\n')
+    offsets = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(output))
+        output += b'%d 0 obj\n%s\nendobj\n' % (number, body)
+    xref = len(output)
+    output += b'xref\n0 %d\n0000000000 65535 f \n' % (len(objects) + 1)
+    output += b''.join(b'%010d 00000 n \n' % offset for offset in offsets)
+    output += b'trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n' % (len(objects) + 1, xref)
+    path.write_bytes(bytes(output))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', action='store_true', help='現在のデスクトップとそのグラフィックドライバーを使う')
@@ -44,13 +63,16 @@ def main():
         assert not list((app / 'usr/lib').glob('libvulkan*'))
         assert not list((app / 'usr/lib').glob('libwayland-*.so*')), 'Bundled Wayland can break newer host Vulkan drivers'
         assert not list((app / 'usr/lib').glob('libc.so*'))
+        assert (app / 'usr/lib/libpdfium.so').is_file()
+        assert (app / 'usr/share/doc/nagame/third-party/pdfium/LICENSE').is_file()
         subprocess.run([str(app / 'AppRun'), '--help'], check=True, stdout=subprocess.DEVNULL)
         subprocess.run([str(image), '--appimage-extract-and-run', '--help'], check=True, stdout=subprocess.DEVNULL)
         fixtures_directory = project / 'target/dist/codec-fixtures' if host else Path('/fixtures')
         fixtures = sorted(fixtures_directory.glob('*'))
         png(root / 'test.png', 320, 240, (220, 20, 10, 255))
-        fixtures += [root / 'test.png']
-        assert {p.suffix for p in fixtures} >= {'.avif', '.heic', '.png'}
+        pdf(root / 'test.pdf')
+        fixtures += [root / 'test.png', root / 'test.pdf']
+        assert {p.suffix for p in fixtures} >= {'.avif', '.heic', '.png', '.pdf'}
         for mode, fixture in [(mode, fixture) for mode in modes for fixture in fixtures]:
             env = dict(os.environ, NAGAME_PROFILE='1', LANG='C.UTF-8', LANGUAGE='en',
                        XDG_CONFIG_HOME=str(root / 'config'))

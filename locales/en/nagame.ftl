@@ -285,7 +285,7 @@ save-path-invalid = Invalid output path
 
 clipboard-input-failed = Cannot open clipboard input
 
-supported-formats = Supported formats: PNG / JPEG / GIF / BMP / WebP / TIFF / ICO / AVIF / HEIF / HEIC
+supported-formats = Supported formats: PNG / JPEG / GIF / BMP / WebP / TIFF / ICO / AVIF / HEIF / HEIC / PDF
 
 parent-missing = No parent folder
 
@@ -296,7 +296,7 @@ search-limit = Folder search limit reached
 lanczos3 = Lanczos3
 
 cli-help = Nagame
-    Usage: nagame [IMAGE_OR_FOLDER]
+    Usage: nagame [IMAGE_PDF_OR_FOLDER]
 
     Ctrl+O: open | Left/Right: browse | +/-: zoom | F: fit | 1: actual size
     R: rotate | F11: fullscreen | S: slideshow | Esc: stop / leave fullscreen
@@ -361,3 +361,27 @@ language-system = System default
 
 window-state-x11-not-found = Nagame X11 window was not found
 window-state-directory-missing = Window state directory is missing
+
+pdf-library-missing = PDFium, which is needed to display PDF files, was not found
+pdf-encrypted = Password-protected PDF files cannot be opened
+pdf-corrupt = The file could not be read as a PDF
+pdf-empty = The PDF has no pages
+pdf-page-error = The PDF page could not be rendered
+pdf-crashed = The PDF renderer stopped unexpectedly
+pdf-timeout = The PDF page did not finish rendering in time
+pdf-io = The PDF file could not be read
+
+pdf-information = File: { $path }
+
+    Format: PDF
+    File size: { $bytes } bytes
+    Page: { $page } / { $total }
+    Page size: { $page_width } × { $page_height } mm
+    Displayed image: { $width } × { $height } ({ $dpi } DPI)
+    Page type: { $kind ->
+        [image] Image-based (rendered at the embedded image resolution)
+       *[vector] Text or graphics (re-rendered for the display)
+    }
+    Pages displayed: { $pages }
+
+    Export saves the page rendered at this resolution, including rotation and two-page spreads.

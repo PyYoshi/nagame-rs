@@ -8,6 +8,7 @@ mod i18n;
 mod memory;
 mod menu_ui;
 mod model;
+mod pdf;
 mod pipeline;
 mod resample;
 mod scrollbar;
@@ -130,6 +131,8 @@ struct Viewer {
     notice: Option<String>,
     /// 表示中のページ数（見開きなら2）。
     pages: usize,
+    /// 表示中の画像がPDFのページなら、その情報。
+    pdf: Option<pipeline::PdfPage>,
     settings: Settings,
     /// 設定画面で編集中の値。保存するまでsettingsへ反映しない。
     settings_draft: Option<Settings>,
@@ -203,6 +206,7 @@ impl Viewer {
             info_text: None,
             notice: None,
             pages: 1,
+            pdf: None,
             settings,
             settings_draft: None,
             settings_tab: settings_ui::Tab::Navigation,
@@ -273,6 +277,7 @@ impl Viewer {
         if let Some(image) = self.image.take() {
             self.retired.push(image);
         }
+        self.pdf = None;
         self.live_dirty = true;
         if held >= 32 * memory::MIB {
             // 退役した画像は2フレーム後に解放される。その後でヒープをOSへ返す。
@@ -334,6 +339,9 @@ impl Viewer {
             if self.pressure_level >= 2 {
                 self.resampling.disable(true, &mut self.retired);
             }
+            // PDFの補助プロセスは、段階1で開いている文書を閉じ、段階2で停止して内部の
+            // メモリーを返す（次の要求で起動し直す）。
+            pdf::trim(self.pressure_level >= 2);
             self.notice = Some(tr!("memory-reduced"));
             self.live_dirty = true;
             self.release_at = Some(Instant::now() + Duration::from_millis(500));
@@ -369,7 +377,7 @@ impl Viewer {
         self.resolve_album(
             move || {
                 let folder = path.is_dir();
-                let mut album = Album::open(&path)?;
+                let mut album = Album::open_selected(&path)?;
                 album.sort(&settings);
                 if folder {
                     album.index = 0;
@@ -402,6 +410,10 @@ impl Viewer {
                     Ok(album) => {
                         this.album = album;
                         this.load(true, cx);
+                        // 開けないPDFへ隣接移動した場合は、空の一覧とその理由を示す。
+                        if let Some(failure) = &this.album.failure {
+                            this.error = Some(failure.clone());
+                        }
                     }
                     Err(error) => {
                         this.loading = false;
@@ -417,7 +429,7 @@ impl Viewer {
     }
 
     fn load(&mut self, reset: bool, cx: &mut Context<Self>) {
-        let Some(path) = self.album.current().map(PathBuf::from) else {
+        let Some(entry) = self.album.current().cloned() else {
             self.clear_image();
             self.generation += 1;
             self.requests.cancel(self.generation);
@@ -444,16 +456,16 @@ impl Viewer {
             .requests
             .send(pipeline::Request {
                 generation: self.generation,
-                path,
+                entry,
                 turns: self.turns,
                 neighbours: if self.settings.prefetch {
-                    self.album.neighbours()
+                    self.album.neighbours(self.settings.manga)
                 } else {
                     vec![]
                 },
                 reload: std::mem::take(&mut self.force_reload),
                 second: if self.settings.manga {
-                    self.album.paths.get(self.album.index + 1).cloned()
+                    self.album.entries.get(self.album.index + 1).cloned()
                 } else {
                     None
                 },
@@ -484,6 +496,8 @@ impl Viewer {
                     self.pages = decoded.pages;
                     self.clear_image();
                     self.image = Some(decoded.image.clone());
+                    self.pdf = decoded.pdf.clone();
+                    self.view.fit_upscale = self.fit_upscale();
                     let now = Instant::now();
                     self.player = decoded.animation.as_ref().map(|a| match &a.motion {
                         pipeline::Motion::Clip(clip) => {
@@ -534,9 +548,10 @@ impl Viewer {
             self.publish_live();
             if std::env::var_os("NAGAME_PROFILE").is_some() {
                 eprintln!(
-                    "memory: held {} MiB, budget {} MiB, animation {}",
+                    "memory: held {} MiB, budget {} MiB, pdf helper {} MiB, animation {}",
                     self.ledger.held() / memory::MIB,
                     self.budget.total / memory::MIB,
+                    pdf::helper_rss() / memory::MIB,
                     match &self.player {
                         Some(p) if p.streaming() => "streaming",
                         Some(p) if p.clip().is_some() => "resident",
@@ -556,10 +571,10 @@ impl Viewer {
         }
         if self.slide
             && !self.loading
-            && self.album.paths.len() > 1
+            && self.album.entries.len() > 1
             && Instant::now() >= self.next_slide
         {
-            if self.album.index + self.pages >= self.album.paths.len() {
+            if self.album.index + self.pages >= self.album.entries.len() {
                 self.at_boundary(1, cx);
             } else {
                 self.album.step(self.pages as isize);
@@ -624,14 +639,14 @@ impl Viewer {
             Command::SaveAs => self.save_as(cx),
             Command::CopyImage => self.copy_image(cx),
             Command::CopyPath => {
-                if let Some(path) = self.album.current() {
+                if let Some(path) = self.album.current_path() {
                     cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
                     self.notice = Some(tr!("path-copied"));
                 }
             }
             Command::Reveal => {
-                if !self.album.directory.as_os_str().is_empty() {
-                    cx.open_with_system(&self.album.directory);
+                if let Some(location) = self.album.location() {
+                    cx.open_with_system(location);
                 }
             }
             Command::Info => self.show_information(cx),
@@ -690,9 +705,9 @@ impl Viewer {
                 } else {
                     self.settings.skip_count as isize
                 };
-                if !self.album.paths.is_empty() {
+                if !self.album.entries.is_empty() {
                     self.album.index = (self.album.index as isize + delta)
-                        .clamp(0, self.album.paths.len() as isize - 1)
+                        .clamp(0, self.album.entries.len() as isize - 1)
                         as usize;
                     self.load(true, cx);
                 }
@@ -721,7 +736,7 @@ impl Viewer {
                             && !settings.parent_folder_first)
                             || (previous && !settings.previous_folder_first)
                         {
-                            target.paths.len().saturating_sub(1)
+                            target.entries.len().saturating_sub(1)
                         } else {
                             0
                         };
@@ -744,7 +759,7 @@ impl Viewer {
                     self.album.index = if direction > 0 {
                         0
                     } else {
-                        self.album.paths.len().saturating_sub(1)
+                        self.album.entries.len().saturating_sub(1)
                     };
                     self.load(true, cx);
                 }
@@ -755,8 +770,9 @@ impl Viewer {
                 } else {
                     -1
                 };
-                if !self.album.paths.is_empty()
-                    && ((direction > 0 && self.album.index + self.pages >= self.album.paths.len())
+                if !self.album.entries.is_empty()
+                    && ((direction > 0
+                        && self.album.index + self.pages >= self.album.entries.len())
                         || (direction < 0 && self.album.index == 0))
                 {
                     self.at_boundary(direction, cx);
@@ -771,9 +787,8 @@ impl Viewer {
                                 let mut step = 2.min(album.index);
                                 if landscape_single {
                                     for offset in 1..=step {
-                                        let [w, h] = decoder::dimensions(
-                                            &album.paths[album.index - offset],
-                                        )?;
+                                        let [w, h] =
+                                            album.entries[album.index - offset].proportions()?;
                                         if w > h {
                                             step = 1;
                                             break;
@@ -795,7 +810,7 @@ impl Viewer {
                 self.album.index = if matches!(command, Command::First) {
                     0
                 } else {
-                    self.album.paths.len().saturating_sub(1)
+                    self.album.entries.len().saturating_sub(1)
                 };
                 self.load(true, cx);
             }
@@ -811,7 +826,7 @@ impl Viewer {
             Command::Fit => {
                 self.view = Viewport {
                     fit: true,
-                    fit_upscale: self.settings.fit_upscale,
+                    fit_upscale: self.fit_upscale(),
                     ..Viewport::default()
                 }
             }
@@ -819,7 +834,7 @@ impl Viewer {
                 self.view = Viewport {
                     fit: false,
                     zoom: 1.,
-                    fit_upscale: self.settings.fit_upscale,
+                    fit_upscale: self.fit_upscale(),
                     pan: [0.; 2],
                 }
             }
@@ -830,16 +845,30 @@ impl Viewer {
             }
             Command::Fullscreen => window.toggle_fullscreen(),
             Command::Slide => {
-                self.slide = !self.slide && !self.album.paths.is_empty();
+                self.slide = !self.slide && !self.album.entries.is_empty();
                 self.next_slide = Instant::now()
                     + Duration::from_secs(u64::from(self.settings.slideshow_seconds));
             }
             Command::Reload => {
                 self.force_reload = true;
-                if let Some(path) = self.album.current().map(PathBuf::from).or_else(|| {
-                    (!self.album.directory.as_os_str().is_empty())
-                        .then(|| self.album.directory.clone())
-                }) {
+                if self.album.document {
+                    // PDFは文書を開き直し、表示中のページを保つ。異常終了・時間切れの記録も消す。
+                    pdf::forget(&self.album.directory);
+                    let (path, index) = (self.album.directory.clone(), self.album.index);
+                    self.resolve_album(
+                        move || {
+                            let mut album = Album::open(&path)?;
+                            album.index = index.min(album.entries.len().saturating_sub(1));
+                            Ok(album)
+                        },
+                        cx,
+                    );
+                } else if let Some(path) =
+                    self.album.current_path().map(PathBuf::from).or_else(|| {
+                        (!self.album.directory.as_os_str().is_empty())
+                            .then(|| self.album.directory.clone())
+                    })
+                {
                     self.open(path, cx);
                 }
             }
@@ -974,9 +1003,15 @@ impl Viewer {
     fn initial_view(&self) -> Viewport {
         Viewport {
             fit: self.settings.fit_on_open,
-            fit_upscale: self.settings.fit_upscale,
+            fit_upscale: self.fit_upscale(),
             ..Viewport::default()
         }
+    }
+
+    /// フィットで元の大きさより拡大するか。文字・図形を含むPDFのページは固有の画素寸法が
+    /// ないため、設定によらず画面に合わせる（表示解像度で描き直す）。
+    fn fit_upscale(&self) -> bool {
+        self.settings.fit_upscale || self.pdf.as_ref().is_some_and(|pdf| pdf.vector)
     }
 
     fn at_boundary(&mut self, direction: isize, cx: &mut Context<Self>) {
@@ -992,7 +1027,7 @@ impl Viewer {
                 self.album.index = if direction > 0 {
                     0
                 } else {
-                    self.album.paths.len().saturating_sub(1)
+                    self.album.entries.len().saturating_sub(1)
                 };
                 self.load(true, cx);
             }
@@ -1009,7 +1044,7 @@ impl Viewer {
                 let mut target = album.folder(direction, false)?;
                 target.sort(&settings);
                 target.index = if direction < 0 {
-                    target.paths.len().saturating_sub(1)
+                    target.entries.len().saturating_sub(1)
                 } else {
                     0
                 };
@@ -1091,6 +1126,7 @@ impl Render for Viewer {
                     target,
                     algorithm,
                     self.budget.resample,
+                    None,
                     &mut self.retired,
                 ),
                 // 全フレームを保持していない間（1周目のデコード中・逐次デコード中）と、逼迫の
@@ -1111,11 +1147,22 @@ impl Render for Viewer {
             ))
         } else if let Some(image) = &self.image {
             let scaled = if self.pressure_level < 2 {
+                // 文字・図形を含む単独表示のPDFページは、拡大時に表示解像度で描き直す。
+                let vector = self
+                    .pdf
+                    .as_ref()
+                    .filter(|pdf| pdf.vector && self.pages == 1)
+                    .map(|pdf| resample::Vector {
+                        path: pdf.path.clone(),
+                        page: pdf.page,
+                        turns: self.turns,
+                    });
                 self.resampling.prepare(
                     std::slice::from_ref(image),
                     target,
                     algorithm,
                     self.budget.resample,
+                    vector.as_ref(),
                     &mut self.retired,
                 )
             } else {
@@ -1156,8 +1203,9 @@ impl Render for Viewer {
                 });
             });
         }
-        let path = self.album.current();
-        let filename = path
+        let filename = self
+            .album
+            .current_path()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .or_else(|| {
@@ -1187,7 +1235,7 @@ impl Render for Viewer {
             };
             i18n::image_status(i18n::ImageStatus {
                 page_range: &page_range,
-                total: self.album.paths.len(),
+                total: self.album.entries.len(),
                 dimensions: self.dimensions,
                 percent: scale * 100.,
                 fit: self.view.fit,
@@ -1488,6 +1536,10 @@ impl Render for Viewer {
 }
 
 fn main() {
+    // PDFの補助プロセスとして起動された場合は、GPUIを初期化せずにその処理だけを行う。
+    if let Some(code) = pdf::helper_main() {
+        std::process::exit(code);
+    }
     memory::tune_allocator();
     let path = std::env::args_os().nth(1).map(PathBuf::from);
     if path

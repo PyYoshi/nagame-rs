@@ -1,5 +1,6 @@
 //! 画像一覧・並び順・フォルダ探索と、表示倍率・パンの計算。
-//! デコードやWindow操作を持たず、AlbumとViewportの状態を扱う。
+//! デコードやWindow操作を持たず、AlbumとViewportの状態を扱う。PDFはページを持つ入れ物として
+//! 扱い、開くとアルバムがそのページ列になる（docs/pdf-support.md）。
 
 use crate::i18n::tr;
 use crate::settings::{Settings, SortOrder};
@@ -68,18 +69,55 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
         .then_with(|| a.cmp(b))
 }
 
-/// 1つのフォルダにある対応画像の一覧と、表示中の位置。
+/// アルバムの1項目。画像ファイル、またはPDFの1ページ。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Entry {
+    pub path: PathBuf,
+    /// PDFのページ。画像ファイルではNone。
+    pub page: Option<Page>,
+}
+impl Entry {
+    pub fn file(path: PathBuf) -> Self {
+        Self { path, page: None }
+    }
+    /// 画素を展開せずに得る縦横の大きさ（向き情報を反映、利用者の追加回転は含まない）。
+    /// 比率だけを使う（見開きで横長のページを単独表示するかの判定）。PDFは論理寸法。
+    pub fn proportions(&self) -> Result<[f32; 2], String> {
+        match self.page {
+            Some(page) => Ok(page.size),
+            None => crate::decoder::dimensions(&self.path).map(|[w, h]| [w as f32, h as f32]),
+        }
+    }
+}
+
+/// PDFのページ。indexは0から、sizeは論理寸法（pt。回転とCropBoxを反映）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Page {
+    pub index: u32,
+    pub size: [f32; 2],
+}
+
+/// 1つのフォルダにある対応画像、または1つのPDFのページの一覧と、表示中の位置。
 #[derive(Default, Clone)]
 pub struct Album {
+    /// フォルダ。PDFのアルバムではPDFのパス。
     pub directory: PathBuf,
-    pub paths: Vec<PathBuf>,
+    pub entries: Vec<Entry>,
     pub index: usize,
+    /// PDFのページ列。並べ替えず、常に文書順。
+    pub document: bool,
+    /// 開けなかったPDF（同階層の隣接移動で、空の一覧として移った）の理由。
+    pub failure: Option<String>,
 }
 
 impl Album {
     /// ファイルならそのフォルダを開いてそのファイルを選び、フォルダなら先頭を選ぶ。並びは自然順。
+    /// PDFならそのページ列を開いて先頭のページを選ぶ。
     pub fn open(path: &Path) -> Result<Self, String> {
         let path = path.canonicalize().map_err(|e| e.to_string())?;
+        if !path.is_dir() && crate::pdf::is_pdf(&path) {
+            return Self::open_document(&path);
+        }
         if !path.is_dir() && !supported(&path) {
             return Err(tr!("supported-formats"));
         }
@@ -106,17 +144,71 @@ impl Album {
 
         let index = paths.iter().position(|p| p == &path).unwrap_or(0);
         Ok(Self {
-            paths,
+            entries: paths.into_iter().map(Entry::file).collect(),
             index,
             directory: directory.to_path_buf(),
+            document: false,
+            failure: None,
         })
     }
 
-    /// 設定の並び順に並べ替える。表示中の画像は選んだままにする。
+    /// PDFのページ列。ページ数と寸法は補助プロセスで一度に取得する。
+    fn open_document(path: &Path) -> Result<Self, String> {
+        let pages = crate::pdf::open(path).map_err(crate::pdf::Failure::message)?;
+        Ok(Self {
+            directory: path.to_path_buf(),
+            entries: pages
+                .into_iter()
+                .enumerate()
+                .map(|(index, size)| Entry {
+                    path: path.to_path_buf(),
+                    page: Some(Page {
+                        index: index as u32,
+                        size,
+                    }),
+                })
+                .collect(),
+            index: 0,
+            document: true,
+            failure: None,
+        })
+    }
+
+    /// 利用者が選んだファイル・フォルダを開く。画像がなくPDFだけがあるフォルダなら、
+    /// 先頭のPDFを開く（親フォルダへの移動では使わない。直前のPDFへ戻ってしまうため）。
+    pub fn open_selected(path: &Path) -> Result<Self, String> {
+        let album = Self::open(path)?;
+        if !album.document
+            && album.entries.is_empty()
+            && let Some(first) = directories(&album.directory)
+                .into_iter()
+                .find(|path| crate::pdf::is_pdf(path))
+        {
+            return Self::open(&first);
+        }
+        Ok(album)
+    }
+
+    /// 画像の一覧があるフォルダ。PDFのアルバムではPDFのあるフォルダ。
+    pub fn location(&self) -> Option<&Path> {
+        if self.directory.as_os_str().is_empty() {
+            None
+        } else if self.document {
+            self.directory.parent()
+        } else {
+            Some(&self.directory)
+        }
+    }
+
+    /// 設定の並び順に並べ替える。表示中の画像は選んだままにする。PDFのページ列は並べ替えない。
     pub fn sort(&mut self, settings: &Settings) {
-        let selected = self.current().map(PathBuf::from);
-        let mut items: Vec<_> = std::mem::take(&mut self.paths)
+        if self.document {
+            return;
+        }
+        let selected = self.current_path().map(PathBuf::from);
+        let mut items: Vec<_> = std::mem::take(&mut self.entries)
             .into_iter()
+            .map(|entry| entry.path)
             .map(|path| {
                 let name = path
                     .file_name()
@@ -168,24 +260,30 @@ impl Album {
         if settings.reverse {
             items.reverse();
         }
-        self.paths = items.into_iter().map(|item| item.0).collect();
+        self.entries = items.into_iter().map(|item| Entry::file(item.0)).collect();
         self.index = selected
-            .and_then(|path| self.paths.iter().position(|p| p == &path))
+            .and_then(|path| self.entries.iter().position(|e| e.path == path))
             .unwrap_or(0);
     }
 
-    /// 先読みする次と前の画像。端では反対側へ回り込む。
-    pub fn neighbours(&self) -> Vec<PathBuf> {
-        if self.paths.len() < 2 {
+    /// 先読みする前後の項目。見開き（spread）では次の見開き（2ページ先から2枚）と前の2枚。
+    /// 端では反対側へ回り込む。表示中の項目と重複は除く。
+    pub fn neighbours(&self, spread: bool) -> Vec<Entry> {
+        let length = self.entries.len() as isize;
+        if length < 2 {
             return vec![];
         }
-        [1isize, -1]
+        let steps: &[isize] = if spread { &[2, 3, -2, -1] } else { &[1, -1] };
+        let mut indices = Vec::new();
+        for step in steps {
+            let index = (self.index as isize + step).rem_euclid(length) as usize;
+            if index != self.index && !indices.contains(&index) {
+                indices.push(index);
+            }
+        }
+        indices
             .into_iter()
-            .map(|step| {
-                self.paths
-                    [(self.index as isize + step).rem_euclid(self.paths.len() as isize) as usize]
-                    .clone()
-            })
+            .map(|index| self.entries[index].clone())
             .collect()
     }
 
@@ -197,13 +295,24 @@ impl Album {
         for _ in 0..4096 {
             directory = next_directory(&directory, direction, adjacent)
                 .ok_or(tr!("destination-missing"))?;
-            if let Ok(mut album) = Self::open(&directory)
-                && (adjacent || !album.paths.is_empty())
-            {
-                if direction < 0 {
-                    album.index = album.paths.len().saturating_sub(1);
+            match Self::open(&directory) {
+                Ok(mut album) if adjacent || !album.entries.is_empty() => {
+                    if direction < 0 {
+                        album.index = album.entries.len().saturating_sub(1);
+                    }
+                    return Ok(album);
                 }
-                return Ok(album);
+                // 開けないPDFは、画像がある前後のフォルダを探す移動では飛ばす。同階層の隣接移動
+                // では空の一覧として移って理由を示す（次の移動でその先へ進めるように）。
+                Err(error) if adjacent && crate::pdf::is_pdf(&directory) => {
+                    return Ok(Self {
+                        directory,
+                        document: true,
+                        failure: Some(error),
+                        ..Self::default()
+                    });
+                }
+                _ => {}
             }
         }
         Err(tr!("search-limit"))
@@ -212,28 +321,36 @@ impl Album {
     pub fn parent(&self) -> Result<Self, String> {
         let parent = self.directory.parent().ok_or(tr!("parent-missing"))?;
         let mut album = Self::open(parent)?;
-        album.index = album.paths.len().saturating_sub(1);
+        album.index = album.entries.len().saturating_sub(1);
         Ok(album)
     }
 
-    pub fn current(&self) -> Option<&Path> {
-        self.paths.get(self.index).map(PathBuf::as_path)
+    pub fn current(&self) -> Option<&Entry> {
+        self.entries.get(self.index)
+    }
+
+    pub fn current_path(&self) -> Option<&Path> {
+        self.current().map(|entry| entry.path.as_path())
     }
 
     pub fn step(&mut self, delta: isize) {
-        if !self.paths.is_empty() {
+        if !self.entries.is_empty() {
             self.index =
-                (self.index as isize + delta).rem_euclid(self.paths.len() as isize) as usize;
+                (self.index as isize + delta).rem_euclid(self.entries.len() as isize) as usize;
         }
     }
 }
 
+/// parent直下の入れ物（サブフォルダとPDF）を自然順に並べる。PDFは子を持たない入れ物。
 fn directories(parent: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<_> = fs::read_dir(parent)
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| {
+            entry.file_type().is_ok_and(|kind| kind.is_dir())
+                || (crate::pdf::is_pdf(&entry.path()) && entry.path().is_file())
+        })
         .map(|entry| entry.path())
         .collect();
     paths.sort_by(|a, b| {
@@ -355,9 +472,8 @@ mod tests {
     #[test]
     fn navigation_wraps_both_ends_and_empty_is_safe() {
         let mut album = Album {
-            directory: PathBuf::new(),
-            paths: vec!["1.png".into(), "2.png".into()],
-            index: 0,
+            entries: vec![Entry::file("1.png".into()), Entry::file("2.png".into())],
+            ..Album::default()
         };
         album.step(-1);
         assert_eq!(album.index, 1);
@@ -388,7 +504,7 @@ mod tests {
             fs::write(root.join(name), []).unwrap();
         }
         let album = Album::open(&root.join("10.png")).unwrap();
-        assert_eq!(album.paths.len(), 3);
+        assert_eq!(album.entries.len(), 3);
         assert_eq!(album.index, 1);
         assert_eq!(Album::open(&root.join("20.JPE")).unwrap().index, 2);
         fs::remove_dir_all(root).unwrap();
@@ -412,7 +528,7 @@ mod folder_tests {
         assert!(child.directory.ends_with("01/child"));
         let sibling = album.folder(1, true).unwrap();
         assert!(sibling.directory.ends_with("02-empty"));
-        assert!(sibling.paths.is_empty());
+        assert!(sibling.entries.is_empty());
         let next = child.folder(1, false).unwrap();
         assert!(next.directory.ends_with("03"));
         let previous = next.folder(-1, false).unwrap();
@@ -438,21 +554,114 @@ mod sort_tests {
             sort: SortOrder::Size,
             ..Settings::default()
         });
-        assert!(album.paths[0].ends_with("2.png"));
-        assert!(album.paths[2].ends_with("1.png"));
+        assert!(album.entries[0].path.ends_with("2.png"));
+        assert!(album.entries[2].path.ends_with("1.png"));
         assert_eq!(album.index, 0);
         album.sort(&Settings {
             natural_sort: false,
             ..Settings::default()
         });
-        assert!(album.paths[1].ends_with("10.png"));
+        assert!(album.entries[1].path.ends_with("10.png"));
         assert_eq!(album.index, 2);
         album.sort(&Settings {
             reverse: true,
             ..Settings::default()
         });
-        assert!(album.paths[0].ends_with("10.png"));
-        assert!(album.current().unwrap().ends_with("2.png"));
+        assert!(album.entries[0].path.ends_with("10.png"));
+        assert!(album.current_path().unwrap().ends_with("2.png"));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod document_tests {
+    use super::*;
+    use crate::pdf::synthetic::{Page as SyntheticPage, pdf};
+
+    fn pages(count: usize) -> Vec<u8> {
+        let page = SyntheticPage {
+            size: [100., 150.],
+            ..SyntheticPage::default()
+        };
+        pdf(&vec![page; count], false)
+    }
+
+    #[test]
+    fn documents_open_as_page_lists_that_keep_document_order() {
+        let root = std::env::temp_dir().join(format!("nagame-document-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("book.pdf"), pages(3)).unwrap();
+        let mut album = Album::open(&root.join("book.pdf")).unwrap();
+        assert!(album.document);
+        assert_eq!(album.entries.len(), 3);
+        assert_eq!(album.index, 0);
+        assert_eq!(
+            album.entries[2].page,
+            Some(Page {
+                index: 2,
+                size: [100., 150.]
+            })
+        );
+        assert_eq!(
+            album.location(),
+            Some(root.canonicalize().unwrap().as_path())
+        );
+        album.index = 1;
+        album.sort(&Settings {
+            reverse: true,
+            ..Settings::default()
+        });
+        assert_eq!(album.entries[0].page.unwrap().index, 0);
+        assert_eq!(album.index, 1);
+        // 見開きでは次の見開き（2ページ先から）と前の2ページを先読みする。
+        let spread: Vec<_> = album
+            .neighbours(true)
+            .iter()
+            .map(|entry| entry.page.unwrap().index)
+            .collect();
+        assert_eq!(spread, [0, 2]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folder_moves_treat_documents_as_containers_and_skip_unreadable_ones() {
+        let root = std::env::temp_dir().join(format!("nagame-shelf-{}", std::process::id()));
+        fs::create_dir_all(root.join("shelf")).unwrap();
+        fs::write(root.join("shelf/vol1.pdf"), pages(2)).unwrap();
+        fs::write(root.join("shelf/vol2-broken.pdf"), b"%PDF-1.7\nbroken").unwrap();
+        fs::write(root.join("shelf/vol3.pdf"), pages(1)).unwrap();
+        fs::write(root.join("cover.png"), []).unwrap();
+        // PDFだけのフォルダを選んだら先頭のPDFを開く。親フォルダへの移動では開かない。
+        let first = Album::open_selected(&root.join("shelf")).unwrap();
+        assert!(first.document && first.directory.ends_with("vol1.pdf"));
+        let parent = first.parent().unwrap();
+        assert!(!parent.document && parent.entries.is_empty());
+        // 画像がある前後のフォルダを探す移動では、開けないPDFを飛ばす。
+        let next = first.folder(1, false).unwrap();
+        assert!(next.directory.ends_with("vol3.pdf"));
+        let back = next.folder(-1, false).unwrap();
+        assert!(back.directory.ends_with("vol1.pdf"));
+        assert_eq!(back.index, 1);
+        // 同階層の隣接移動では、空の一覧として移って理由を示し、次の移動でその先へ進める。
+        let broken = first.folder(1, true).unwrap();
+        assert!(broken.directory.ends_with("vol2-broken.pdf") && broken.entries.is_empty());
+        assert_eq!(broken.failure, Some(tr!("pdf-corrupt")));
+        assert!(
+            broken
+                .folder(1, true)
+                .unwrap()
+                .directory
+                .ends_with("vol3.pdf")
+        );
+        // 画像のフォルダからは、子の入れ物としてPDFへ入る。
+        let images = Album::open(&root.join("cover.png")).unwrap();
+        assert!(
+            images
+                .folder(1, false)
+                .unwrap()
+                .directory
+                .ends_with("vol1.pdf")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

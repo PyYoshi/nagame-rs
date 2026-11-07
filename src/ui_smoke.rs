@@ -35,7 +35,7 @@ async fn wait_for_folder_image(
                     } else {
                         "03.png"
                     };
-                    assert_eq!(v.album.paths[index].file_name().unwrap(), filename);
+                    assert_eq!(v.album.entries[index].path.file_name().unwrap(), filename);
                 })
                 .unwrap();
             // 次の操作の前に、デコードした画像をウィンドウに描画させる。
@@ -236,7 +236,7 @@ async fn animation_check(
         }));
         open(cx, "a.gif");
         wait_for(handle, cx, executor, "album", |v| {
-            !v.loading && v.album.paths.len() == 3
+            !v.loading && v.album.entries.len() == 3
         })
         .await;
         for direction in ["right", "left"] {
@@ -386,10 +386,220 @@ async fn memory_profile(
     }
 }
 
+/// 合成したPDFで、開いた直後の状態、拡大時の描き直し、連続のページ送り、見開き、
+/// メモリー逼迫で補助プロセスを止めた後の回復、最終ページから次の文書への移動を確かめる。
+async fn pdf_check(handle: WindowHandle<Viewer>, cx: &mut AsyncApp, executor: &BackgroundExecutor) {
+    use crate::pdf::synthetic::{Item, Page, pdf};
+    let root = std::env::temp_dir().join(format!("nagame-ui-pdf-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    // 文字・図形のA4ページ（150 DPIで1240×1754）と、300 DPIのスキャン（600×800）を交互に並べる。
+    let text = Page {
+        size: [595., 842.],
+        items: vec![
+            Item::Rect {
+                rgb: [30, 120, 30],
+                rect: [50., 50., 200., 100.],
+            },
+            Item::Text {
+                text: "Nagame".into(),
+                position: [72., 700.],
+                size: 24.,
+                invisible: false,
+            },
+        ],
+        ..Page::default()
+    };
+    // 300 DPIのスキャン。フォームXObjectで包んだものも画像主体として扱うことを確かめる。
+    let scan = Page {
+        size: [144., 192.],
+        items: vec![Item::Image {
+            pixels: [600, 800],
+            left: [200, 40, 40],
+            right: [40, 40, 200],
+            rect: [0., 0., 144., 192.],
+        }],
+        ..Page::default()
+    };
+    let wrapped = Page {
+        size: [144., 192.],
+        items: vec![Item::FormImage {
+            pixels: [600, 800],
+            color: [200, 40, 40],
+            rect: [0., 0., 144., 192.],
+        }],
+        ..Page::default()
+    };
+    let pages: Vec<_> = (0..240)
+        .map(|i| match i % 4 {
+            1 => scan.clone(),
+            3 => wrapped.clone(),
+            _ => text.clone(),
+        })
+        .collect();
+    std::fs::write(root.join("vol1.pdf"), pdf(&pages, false)).unwrap();
+    std::fs::write(
+        root.join("vol2.pdf"),
+        pdf(&[text.clone(), scan.clone()], false),
+    )
+    .unwrap();
+    handle
+        .update(cx, |v, _, cx| {
+            v.settings.boundary = BoundaryAction::Folder;
+            v.open(root.join("vol1.pdf"), cx);
+        })
+        .unwrap();
+    wait_for(handle, cx, executor, "the first PDF page", |v| {
+        v.album.document && v.image.is_some() && !v.loading
+    })
+    .await;
+    handle
+        .read_with(cx, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert_eq!(v.album.entries.len(), 240);
+            assert!(v.pdf.as_ref().unwrap().vector);
+            assert!(
+                v.view.fit_upscale,
+                "Text pages fill the window regardless of the setting"
+            );
+            assert_eq!(v.dimensions, [1240., 1754.]);
+        })
+        .unwrap();
+    // 原寸より拡大すると、補間ではなく表示解像度で描き直す（既定のGPU表示でも）。
+    handle
+        .update(cx, |v, window, cx| {
+            v.command(Command::Actual, window, cx);
+            v.command(Command::ZoomIn, window, cx);
+        })
+        .unwrap();
+    wait_for(handle, cx, executor, "the redrawn PDF page", |v| {
+        v.resampling
+            .ready_image()
+            .is_some_and(|image| u32::from(image.size(0).width) > 1300)
+    })
+    .await;
+    eprintln!("PASS: PDF text pages fill the window and are redrawn at the display resolution");
+    let start = std::time::Instant::now();
+    for _ in 0..200 {
+        key(handle, cx, "right");
+        executor.timer(Duration::from_millis(8)).await;
+    }
+    wait_for(handle, cx, executor, "settled PDF navigation", |v| {
+        !v.loading && v.image.is_some()
+    })
+    .await;
+    handle
+        .read_with(cx, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert!(
+                v.album.document && v.album.index > 100,
+                "index {}",
+                v.album.index
+            );
+        })
+        .unwrap();
+    eprintln!(
+        "PASS: 200 PDF page turns in {:?}, rss {} MiB, PDF helper {} MiB",
+        start.elapsed(),
+        rss_mib(),
+        crate::pdf::helper_rss() / crate::memory::MIB
+    );
+    handle
+        .update(cx, |v, _, cx| {
+            v.settings.manga = true;
+            v.album.index = 0;
+            v.load(true, cx);
+        })
+        .unwrap();
+    wait_for(handle, cx, executor, "a PDF spread", |v| {
+        !v.loading && v.pages == 2
+    })
+    .await;
+    handle
+        .read_with(cx, |v, _| {
+            // 文字のページをスキャンの倍率（300 DPI）に揃えて並べる。
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert_eq!(v.dimensions, [3079., 3508.]);
+        })
+        .unwrap();
+    eprintln!("PASS: PDF spreads align the page scales");
+    handle
+        .update(cx, |v, _, cx| {
+            v.settings.manga = false;
+            v.load(true, cx);
+        })
+        .unwrap();
+    wait_for(handle, cx, executor, "a single PDF page", |v| {
+        !v.loading && v.pages == 1
+    })
+    .await;
+    // 2回の逼迫で補助プロセスを止めても、次のページは起動し直した補助プロセスで描く。
+    crate::memory::signal_pressure();
+    executor.timer(Duration::from_millis(100)).await;
+    crate::memory::signal_pressure();
+    wait_for(handle, cx, executor, "the stopped PDF helper", |v| {
+        v.pressure_level == 2 && crate::pdf::helper_rss() == 0
+    })
+    .await;
+    key(handle, cx, "right");
+    wait_for(
+        handle,
+        cx,
+        executor,
+        "a page from the restarted helper",
+        |v| !v.loading && v.album.index == 1 && v.image.is_some(),
+    )
+    .await;
+    handle
+        .read_with(cx, |v, _| assert!(v.error.is_none(), "{:?}", v.error))
+        .unwrap();
+    eprintln!("PASS: memory pressure stops the PDF helper and the next page restarts it");
+    handle
+        .update(cx, |v, _, cx| {
+            v.album.index = 3;
+            v.load(true, cx);
+        })
+        .unwrap();
+    wait_for(handle, cx, executor, "the wrapped scan", |v| {
+        !v.loading && v.album.index == 3 && v.pdf.is_some()
+    })
+    .await;
+    handle
+        .read_with(cx, |v, _| {
+            assert!(
+                !v.pdf.as_ref().unwrap().vector,
+                "A scan wrapped in a form is an image page"
+            );
+            assert_eq!(v.dimensions, [600., 800.]);
+        })
+        .unwrap();
+    eprintln!("PASS: scans wrapped in form XObjects keep their embedded resolution");
+    handle
+        .update(cx, |v, window, cx| v.command(Command::Last, window, cx))
+        .unwrap();
+    wait_for(handle, cx, executor, "the last PDF page", |v| {
+        !v.loading && v.album.index == 239
+    })
+    .await;
+    key(handle, cx, "right");
+    wait_for(handle, cx, executor, "the next PDF", |v| {
+        !v.loading && v.album.directory.ends_with("vol2.pdf") && v.image.is_some()
+    })
+    .await;
+    eprintln!("PASS: the last page continues to the next PDF in the folder");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// 環境変数で選んだシナリオを実行し、終わったらウィンドウを閉じる。
 pub fn start(handle: WindowHandle<Viewer>, cx: &mut App) {
     let executor = cx.background_executor().clone();
     cx.spawn(async move |cx| {
+        if std::env::var_os("NAGAME_UI_PDF").is_some() {
+            executor.timer(Duration::from_millis(300)).await;
+            pdf_check(handle, cx, &executor).await;
+            let any: AnyWindowHandle = handle.into();
+            any.update(cx, |_, window, _| window.remove_window()).unwrap();
+            return;
+        }
         if let Ok(mode) = std::env::var("NAGAME_UI_WINDOW_STATE") {
             executor.timer(Duration::from_millis(300)).await;
             let expected = [1100., 620.];
@@ -434,7 +644,7 @@ pub fn start(handle: WindowHandle<Viewer>, cx: &mut App) {
         if std::env::var_os("NAGAME_UI_FOLDER_NAVIGATION").is_some() {
             for _ in 0..200 {
                 executor.timer(Duration::from_millis(10)).await;
-                if handle.read_with(cx, |v, _| !v.loading && !v.album.paths.is_empty()).unwrap() {
+                if handle.read_with(cx, |v, _| !v.loading && !v.album.entries.is_empty()).unwrap() {
                     executor.timer(Duration::from_millis(100)).await;
                     break;
                 }

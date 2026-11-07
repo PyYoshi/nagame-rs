@@ -70,6 +70,24 @@ fn rgba_frames<'a>(
         ),
     })
 }
+/// PDFのページを基準解像度（limitまで）で描き直し、追加回転を反映する。
+fn full_page(path: &Path, page: u32, turns: u8, limit: u64) -> Result<Arc<RenderImage>, String> {
+    let rendered = crate::pdf::render(
+        path,
+        page,
+        crate::pdf::Mode::Base { limit },
+        crate::pdf::Class::Open,
+        || false,
+    )
+    .map_err(crate::pdf::Failure::message)?;
+    let pixels = match turns % 4 {
+        1 => image::imageops::rotate90(&rendered.pixels),
+        2 => image::imageops::rotate180(&rendered.pixels),
+        3 => image::imageops::rotate270(&rendered.pixels),
+        _ => rendered.pixels,
+    };
+    Ok(Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])))
+}
 /// 拡張子から形式を決めて保存する。GIFは全フレームを無限ループで、それ以外は先頭フレームを
 /// 書き出す。
 fn save(image: &RenderImage, frames: &Frames, path: &Path) -> Result<(), String> {
@@ -255,19 +273,36 @@ impl Viewer {
                 }
             },
         };
-        let name = format!(
-            "{}_view.png",
-            self.album
-                .current()
-                .and_then(|p| p.file_stem())
-                .unwrap_or_default()
-                .to_string_lossy()
-        );
-        let parent = if self.album.directory.as_os_str().is_empty() {
-            std::path::PathBuf::from(".")
+        let stem = self
+            .album
+            .current_path()
+            .and_then(|p| p.file_stem())
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let name = if self.pdf.is_some() {
+            // PDFはページ番号を含める。桁は総ページ数に合わせ、最低3桁にする。
+            let digits = self.album.entries.len().to_string().len().max(3);
+            let first = self.album.index + 1;
+            if self.pages > 1 {
+                format!("{stem}_p{first:0digits$}-{:0digits$}_view.png", first + 1)
+            } else {
+                format!("{stem}_p{first:0digits$}_view.png")
+            }
         } else {
-            self.album.directory.clone()
+            format!("{stem}_view.png")
         };
+        let parent = self
+            .album
+            .location()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        // 逼迫中に縮めて描いたPDFのページは、逼迫が収まっていれば現在の予算で描き直して保存する
+        // （逼迫中は表示中の画像を保存する）。
+        let redraw = self
+            .pdf
+            .as_ref()
+            .filter(|pdf| pdf.reduced && self.pages == 1 && !crate::memory::under_pressure())
+            .map(|pdf| (pdf.path.clone(), pdf.page, self.turns, self.budget.still));
         let selection = cx.prompt_for_new_path(&parent, Some(&name));
         let executor = cx.background_executor().clone();
         cx.spawn(async move |viewer, cx| {
@@ -290,7 +325,13 @@ impl Viewer {
                 }
             };
             let output = path.clone();
-            let task = executor.spawn(async move { save(&image, &frames, &output) });
+            let task = executor.spawn(async move {
+                let image = match redraw {
+                    Some((path, page, turns, limit)) => full_page(&path, page, turns, limit)?,
+                    None => image,
+                };
+                save(&image, &frames, &output)
+            });
             let result = task.await;
             let _ = viewer.update(cx, |this, cx| {
                 match result {
@@ -307,13 +348,34 @@ impl Viewer {
             self.info_visible = false;
             return;
         }
-        let Some(path) = self.album.current().map(std::path::PathBuf::from) else {
+        let Some(entry) = self.album.current().cloned() else {
             self.notice = Some(tr!("no-open-image"));
             return;
         };
+        // 描けなかったPDFのページには、画像として読む情報がない。
+        if entry.page.is_some() && self.pdf.is_none() {
+            self.notice = Some(tr!("no-open-image"));
+            return;
+        }
+        let path = entry.path.clone();
         self.info_visible = true;
         self.info_text = Some(tr!("loading-info"));
         let dimensions = self.dimensions;
+        if let (Some(page), Some(pdf)) = (entry.page, &self.pdf) {
+            let bytes = std::fs::metadata(&path).map_or(0, |metadata| metadata.len());
+            self.info_text = Some(i18n::pdf_information(i18n::PdfInformation {
+                path: &path,
+                bytes,
+                page: page.index as usize + 1,
+                total: self.album.entries.len(),
+                size: page.size,
+                displayed: dimensions,
+                dpi: pdf.scale * 72.,
+                vector: pdf.vector,
+                pages: self.pages,
+            }));
+            return;
+        }
         let frames = match &self.player {
             Some(player) => player.frames(),
             None => self.image.as_ref().map(|p| p.frame_count()),

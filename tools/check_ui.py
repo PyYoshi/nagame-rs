@@ -12,8 +12,11 @@ import argparse
 from pathlib import Path
 import struct
 import subprocess
+import sys
 import tempfile
 import zlib
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def png(path, width, height, color):
@@ -48,6 +51,12 @@ def main():
         env.pop('NAGAME_UI_FOLDER_NAVIGATION', None)
         env.pop('NAGAME_UI_WINDOW_STATE', None)
         env.pop('NAGAME_UI_ANIMATION', None)
+        env.pop('NAGAME_UI_PDF', None)
+        # PDFの補助プロセスが使う、`just pdfium` で取得した固定版のPDFium。
+        if 'NAGAME_PDFIUM_LIBRARY' not in env:
+            library = subprocess.run([sys.executable, str(ROOT / 'tools/fetch_pdfium.py')], check=True,
+                                     text=True, stdout=subprocess.PIPE).stdout.strip()
+            env['NAGAME_PDFIUM_LIBRARY'] = library
         if args.wayland:
             if not (env.get('WAYLAND_DISPLAY') or env.get('WAYLAND_SOCKET')):
                 raise RuntimeError('A Wayland session is required')
@@ -81,6 +90,7 @@ def main():
         run(folders / '02/01.png', {'NAGAME_UI_FOLDER_NAVIGATION': '1'})
         run(images / '0000.png', {'NAGAME_UI_STRESS': '1'})
         run(source, {'NAGAME_UI_ANIMATION': '1'})
+        run(source, {'NAGAME_UI_PDF': '1'})
         pages = root / 'pages'
         pages.mkdir()
         png(pages / '01.png', 400, 600, (255, 0, 0, 255))

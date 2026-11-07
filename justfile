@@ -11,6 +11,10 @@ setup:
 install-hooks:
     git config --local core.hooksPath .githooks
 
+# PDFの描画に使う固定版のPDFiumを取得（SHA256を照合してtarget/pdfiumへ展開）
+pdfium:
+    python3 tools/fetch_pdfium.py
+
 # 開発用ビルド
 build:
     cargo build --locked
@@ -25,8 +29,8 @@ dist-build:
         RUSTFLAGS="-C target-cpu=x86-64 --remap-path-prefix={{ justfile_directory() }}=." \
         aqua -c aqua.yaml exec -- cross +1.99.1 build --locked --release --bin nagame --target x86_64-unknown-linux-gnu
 
-# 配布用ビルド環境で単体テスト
-dist-test:
+# 配布用ビルド環境で単体テスト（PDFの描画テストは取得済みのPDFiumを使う）
+dist-test: pdfium
     CROSS_CONTAINER_ENGINE=podman CARGO_TARGET_DIR=target/dist-linux-x86_64 \
         RUSTFLAGS="-C target-cpu=x86-64 --remap-path-prefix={{ justfile_directory() }}=." \
         aqua -c aqua.yaml exec -- cross +1.99.1 test --locked --target x86_64-unknown-linux-gnu
