@@ -2,7 +2,10 @@
 __pycache__/
 
 # oh-my-claudecode operational state.
-/.omc/
+.omc/
 
 # IDE local state can contain personal paths.
 /.idea/workspace.xml
+
+# claude-security
+CLAUDE-SECURITY-*/
