@@ -167,6 +167,28 @@ pub fn start(handle: WindowHandle<Viewer>, cx: &mut App) {
         executor.timer(Duration::from_millis(300)).await;
         key(handle, cx, "ctrl-,");
         executor.timer(Duration::from_millis(100)).await;
+        if std::env::var_os("NAGAME_UI_CHECKBOX_SNAPSHOT").is_some() {
+            eprintln!("SNAPSHOT: settings checkboxes");
+            executor.timer(Duration::from_secs(10)).await;
+        }
+        key(handle, cx, "down");
+        key(handle, cx, "space");
+        handle.read_with(cx, |v, _| {
+            assert!(v.settings_draft.as_ref().unwrap().previous_folder_first);
+            assert!(!v.settings.previous_folder_first);
+        }).unwrap();
+        executor.timer(Duration::from_millis(50)).await;
+        key(handle, cx, "space");
+        handle.read_with(cx, |v, _| assert!(!v.settings_draft.as_ref().unwrap().previous_folder_first)).unwrap();
+        key(handle, cx, "space");
+        handle.read_with(cx, |v, _| assert!(v.settings_draft.as_ref().unwrap().previous_folder_first)).unwrap();
+        key(handle, cx, "escape");
+        handle.read_with(cx, |v, _| assert!(!v.settings.previous_folder_first)).unwrap();
+        key(handle, cx, "ctrl-,");
+        executor.timer(Duration::from_millis(100)).await;
+        handle.read_with(cx, |v, _| assert!(!v.settings_draft.as_ref().unwrap().previous_folder_first)).unwrap();
+        eprintln!("PASS: Space toggles checkbox draft values and Cancel discards checkbox changes");
+        key(handle, cx, "up");
         key(handle, cx, "right");
         key(handle, cx, "down");
         handle.read_with(cx, |v,_| {

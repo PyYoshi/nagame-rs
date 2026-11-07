@@ -196,17 +196,9 @@ impl Field {
     fn numeric(self) -> bool {
         matches!(self, Self::Skip | Self::Interval)
     }
-    fn value(self, s: &Settings) -> String {
+    fn checked(self, s: &Settings) -> Option<bool> {
         use Field::*;
-        let boolean = match self {
-            Language => return s.language.label(),
-            Boundary => return s.boundary.label(),
-            ShrinkAlgorithm => return s.shrink_algorithm.label(),
-            EnlargeAlgorithm => return s.enlarge_algorithm.label(),
-            Sort => return s.sort.label(),
-            Skip => return s.skip_count.to_string(),
-            Interval => return s.slideshow_seconds.to_string(),
-            Background => return format!("#{:06X}", s.background),
+        Some(match self {
             PreviousFirst => s.previous_folder_first,
             ParentFirst => s.parent_folder_first,
             Reverse => s.reverse,
@@ -220,6 +212,21 @@ impl Field {
             ReverseControls => s.manga_reverse_controls,
             Prefetch => s.prefetch,
             Wheel => s.wheel_zoom,
+            _ => return None,
+        })
+    }
+    fn value(self, s: &Settings) -> String {
+        use Field::*;
+        let boolean = match self {
+            Language => return s.language.label(),
+            Boundary => return s.boundary.label(),
+            ShrinkAlgorithm => return s.shrink_algorithm.label(),
+            EnlargeAlgorithm => return s.enlarge_algorithm.label(),
+            Sort => return s.sort.label(),
+            Skip => return s.skip_count.to_string(),
+            Interval => return s.slideshow_seconds.to_string(),
+            Background => return format!("#{:06X}", s.background),
+            _ => self.checked(s).expect("boolean setting"),
         };
         if boolean {
             tr!("enabled")
@@ -571,6 +578,7 @@ impl Viewer {
             .enumerate()
             .map(|(index, field)| {
                 let value = field.value(draft);
+                let checked = field.checked(draft);
                 let button = |id: &'static str, label: String, direction: i32| {
                     div()
                         .id(id)
@@ -585,7 +593,30 @@ impl Viewer {
                             this.edit_setting(field, direction, cx)
                         }))
                 };
-                let control = if field.numeric() {
+                let control = if let Some(checked) = checked {
+                    div()
+                        .id("checkbox")
+                        .size(px(32.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .size(px(20.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_sm()
+                                .border_2()
+                                .border_color(rgb(if checked { 0xa9c8ff } else { 0x929eaf }))
+                                .bg(rgb(if checked { 0x3b70b5 } else { 0x1c222b }))
+                                .text_color(rgb(0xffffff))
+                                .text_size(px(16.))
+                                .child(if checked { "✓" } else { "" }),
+                        )
+                        .into_any_element()
+                } else if field.numeric() {
                     div()
                         .flex()
                         .items_center()
@@ -625,7 +656,7 @@ impl Viewer {
                         }))
                         .into_any_element()
                 } else {
-                    button("value", value, 1).into_any_element()
+                    unreachable!("setting must be a checkbox, number or selector")
                 };
                 div()
                     .id(field as usize)
@@ -644,6 +675,14 @@ impl Viewer {
                     }))
                     .child(div().flex_1().min_w_0().child(field.label()))
                     .child(control)
+                    .when(checked.is_some(), |row| {
+                        row.cursor_pointer()
+                            .hover(|style| style.bg(rgb(0x354157)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                window.focus(&this.focus);
+                                this.edit_setting(field, 1, cx);
+                            }))
+                    })
             })
             .collect::<Vec<_>>();
         let rows = if self.settings_tab == Tab::Keyboard {
