@@ -48,7 +48,7 @@ just secrets
 
 `just secrets` はjustfileのあるプロジェクトルートで、aqua経由の固定版betterleaksを直接実行する。Git未追跡のファイルも含め、現在のファイルを検査する。履歴の検査ではない。検出がなければ終了コード0、検出時は1を返す。
 
-[.betterleaks.toml](../.betterleaks.toml) を明示的に読み込み、組み込みの検出ルールを継承する。`target`、`.git`、`__pycache__` ディレクトリとIDEの `workspace.xml` を除外する。検出値は `--redact` でマスクし、外部APIによる有効性検証は有効にしない。
+[.betterleaks.toml](../.betterleaks.toml) を明示的に読み込み、組み込みの検出ルールを継承する。`target`、`.git`、`.omc`、`__pycache__` ディレクトリとIDEの `workspace.xml` を除外する。`.omc` はoh-my-claudecodeのローカル動作データで、Gitと配布用ソースからも除外されている。セッション制御用の値をアプリの秘密情報として検出しないよう、パスを限定して除外する。Gitのignore対象を一律に検査から外すことはせず、`.env` などを含む他のファイルには引き続き組み込みルールを適用する。検出値は `--redact` でマスクし、外部APIによる有効性検証は有効にしない。
 
 Git履歴を検査する場合は、コミットが存在するリポジトリで次を使う。
 

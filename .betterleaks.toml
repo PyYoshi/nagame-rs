@@ -1,9 +1,9 @@
-# Keep the built-in detection rules; skip generated files and local IDE state.
+# Keep the built-in detection rules; skip generated files and local tool state.
 # Pass this file explicitly with --config (Betterleaks v1.10.0).
 title = "Nagame secret scanning"
 prefilter = '''
 filter.matchesAny(attributes["path"], [
-  `(?:^|[\\/])(?:target|\.git|__pycache__)(?:[\\/]|$)`,
+  `(?:^|[\\/])(?:target|\.omc|\.git|__pycache__)(?:[\\/]|$)`,
   `(?:^|[\\/])\.idea[\\/]workspace\.xml$`
 ])
 '''
