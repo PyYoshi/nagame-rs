@@ -15,6 +15,7 @@
 | [pipeline.rs](../src/pipeline.rs) | `Loader`, `Request`, `Response`, `Loaded`, `worker` | デコード用ワーカー、世代管理、LRU、先読み、見開き合成・回転 |
 | [resample.rs](../src/resample.rs) | `Algorithm`, `State` | 表示専用リサイズのワーカー、要求の集約、古い結果の破棄 |
 | [settings.rs](../src/settings.rs) | `Settings`, `BoundaryAction`, `SortOrder` | 設定値、既定値、正規化、JSONの読み書き |
+| [window_state.rs](../src/window_state.rs) | `WindowState`, `restore_position` | 通常サイズ・位置・最大化の保存、画面変更時の補正、X11の位置復元 |
 | [settings_ui.rs](../src/settings_ui.rs) | `Tab`, `Field`, `Selector` | 設定の下書き編集、候補一覧、キー割り当ての入力 |
 | [bindings.rs](../src/bindings.rs) | `Shortcut`, `defaults` | 割り当て可能な操作と初期キー |
 | [menu_ui.rs](../src/menu_ui.rs) | `Menu` | メニューバー、右クリックメニュー、メニュー内のキー操作 |
@@ -111,3 +112,11 @@ UI・アプリ自身のエラー・CLIヘルプはFluentの日本語・英語リ
 同じディレクトリに単色版（`logo-mono.svg`）、明るい単色版（`logo-light.svg`）、文字入り版（`logo-lockup.svg` / `logo-lockup-light.svg`）、32・64・256・512pxの透過PNGを置く。文字入り版の文字はパス化済みで、フォントのインストールを必要としない。SVGはベクターのみで構成し、背景の透明部分を白い塗りで埋めない。
 
 PNGの生成・更新後は `just optimize-png` でoxipngによる可逆圧縮を行う。表示に影響しないメタデータだけを除去し、画素値は維持する。
+
+## ウィンドウ状態
+
+`window-state.json` は `settings.json` と同じディレクトリに置く。起動時に読み込み、欠損・破損時は既定値を使う。`observe_window_bounds` で通常のサイズ・位置と最大化状態をメモリーへ記録し、ウィンドウ破棄・アプリ終了時に一時ファイルからrenameして保存する。リサイズのたびにディスクへ書き込まない。全画面中の変更は記録せず、最大化中も通常の矩形を保持する。
+
+Waylandではグローバル位置を取得・指定できないため、サイズと最大化状態を復元する。起動直後に出力情報が未取得の場合は保存サイズを維持し、実際の制約はコンポジターのconfigureに任せる。画面情報がある場合は矩形を画面内へ補正する。X11のGPUI 0.2.2は仮想スクリーン全体を返すため、モニター間の空白領域までは判定しない。
+
+X11ではGPUIへの初期座標指定がWMの自動配置で変更されるため、マップ後に [EWMHの `_NET_MOVERESIZE_WINDOW`](https://specifications.freedesktop.org/wm/latest/ar01s04.html) を送る。GPUI 0.2.2のX11 raw window handleは未実装なので、`x11rb` で `_NET_CLIENT_LIST` と `_NET_WM_PID` から自身のプロセスのウィンドウだけを特定する。配置の最終判断はWMが行う。GPUIが初期最大化を反映しないX11ではマップ後に最大化する。これらはWaylandでは実行しない。

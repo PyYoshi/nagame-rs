@@ -53,9 +53,69 @@ fn key(handle: WindowHandle<Viewer>, cx: &mut AsyncApp, value: &str) {
         .unwrap();
 }
 
+async fn wait_for_window_state(
+    handle: WindowHandle<Viewer>,
+    cx: &mut AsyncApp,
+    executor: &BackgroundExecutor,
+    predicate: impl Fn(&Viewer, &Window) -> bool,
+) {
+    for _ in 0..300 {
+        executor.timer(Duration::from_millis(10)).await;
+        if handle
+            .update(cx, |viewer, window, _| predicate(viewer, window))
+            .unwrap()
+        {
+            executor.timer(Duration::from_millis(100)).await;
+            return;
+        }
+    }
+    panic!("Timed out waiting for window state");
+}
+
 pub fn start(handle: WindowHandle<Viewer>, cx: &mut App) {
     let executor = cx.background_executor().clone();
     cx.spawn(async move |cx| {
+        if let Ok(mode) = std::env::var("NAGAME_UI_WINDOW_STATE") {
+            executor.timer(Duration::from_millis(300)).await;
+            let expected = [1100., 620.];
+            if mode == "resize" {
+                handle.update(cx, |_, window, _| window.resize(size(px(expected[0]), px(expected[1])))).unwrap();
+                wait_for_window_state(handle, cx, &executor, |viewer, window| {
+                    viewer.window_state.size == expected && window.bounds().size == size(px(expected[0]), px(expected[1]))
+                }).await;
+                handle.update(cx, |_, window, _| window.toggle_fullscreen()).unwrap();
+                wait_for_window_state(handle, cx, &executor, |_, window| window.is_fullscreen()).await;
+            } else if mode == "restore" {
+                let saved = crate::window_state::WindowState::load(&crate::window_state::WindowState::path().unwrap());
+                handle.update(cx, |viewer, window, cx| {
+                    assert!(!window.is_fullscreen());
+                    assert_eq!(window.bounds().size, size(px(expected[0]), px(expected[1])));
+                    if cx.compositor_name() == "X11" {
+                        let saved = saved.position.unwrap();
+                        let actual = viewer.window_state.position.unwrap();
+                        assert!((saved[0] - actual[0]).abs() <= 5. && (saved[1] - actual[1]).abs() <= 5., "saved {saved:?}, actual {actual:?}");
+                    } else {
+                        assert!(viewer.window_state.position.is_none());
+                    }
+                    window.zoom_window();
+                }).unwrap();
+                wait_for_window_state(handle, cx, &executor, |viewer, window| window.is_maximized() && viewer.window_state.maximized).await;
+            } else {
+                assert_eq!(mode, "maximized");
+                wait_for_window_state(handle, cx, &executor, |viewer, window| window.is_maximized() && viewer.window_state.maximized).await;
+                handle.update(cx, |_, window, _| window.zoom_window()).unwrap();
+                wait_for_window_state(handle, cx, &executor, |viewer, window| {
+                    !window.is_maximized() && viewer.window_state.size == expected && window.bounds().size == size(px(expected[0]), px(expected[1]))
+                }).await;
+            }
+            handle.update(cx, |viewer, _, cx| {
+                assert_eq!(viewer.window_state.size, expected, "Normal geometry was overwritten");
+                eprintln!("PASS: {} window state {mode}: {:?}", cx.compositor_name(), viewer.window_state);
+            }).unwrap();
+            let any: AnyWindowHandle = handle.into();
+            any.update(cx, |_, window, _| window.remove_window()).unwrap();
+            return;
+        }
         if std::env::var_os("NAGAME_UI_FOLDER_NAVIGATION").is_some() {
             for _ in 0..200 {
                 executor.timer(Duration::from_millis(10)).await;

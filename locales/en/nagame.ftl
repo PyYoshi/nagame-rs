@@ -319,6 +319,10 @@ resampling-error = { "    " }Filter: { $error }
 
 window-open-error = Cannot open window: { $error }
 
+window-state-save-error = Cannot save window state: { $error }
+
+window-state-restore-error = Cannot restore window position: { $error }
+
 clipboard-tool-error = Image copying requires { $tool }: { $error }
 
 clipboard-write-error = Cannot write to clipboard: { $error }
@@ -350,3 +354,6 @@ field-language = Language
 language-ja = 日本語
 language-en = English
 language-system = System default
+
+window-state-x11-not-found = Nagame X11 window was not found
+window-state-directory-missing = Window state directory is missing

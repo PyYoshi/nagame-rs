@@ -315,6 +315,10 @@ resampling-error = { "    " }補間: { $error }
 
 window-open-error = ウィンドウを開けません: { $error }
 
+window-state-save-error = ウィンドウの状態を保存できません: { $error }
+
+window-state-restore-error = ウィンドウの位置を復元できません: { $error }
+
 clipboard-tool-error = 画像コピーには { $tool } が必要です: { $error }
 
 clipboard-write-error = クリップボードへ書き込めません: { $error }
@@ -348,3 +352,6 @@ language-ja = 日本語
 language-en = English
 
 language-system = システムに合わせる
+
+window-state-x11-not-found = NagameのX11ウィンドウが見つかりません
+window-state-directory-missing = ウィンドウ状態の保存先ディレクトリがありません

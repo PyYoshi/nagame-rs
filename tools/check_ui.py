@@ -6,10 +6,10 @@ Run: python3 tools/check_ui.py [target/debug/nagame]
 Requires a working desktop display. Does not inject desktop-wide input events.
 """
 import os
+import argparse
 from pathlib import Path
 import struct
 import subprocess
-import sys
 import tempfile
 import zlib
 
@@ -23,7 +23,12 @@ def png(path, width, height, color):
 
 
 def main():
-    binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/nagame').resolve()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('binary', nargs='?', default='target/debug/nagame')
+    parser.add_argument('--window-state-only', action='store_true')
+    parser.add_argument('--wayland', action='store_true', help='Use the current Wayland session instead of X11')
+    args = parser.parse_args()
+    binary = Path(args.binary).resolve()
     with tempfile.TemporaryDirectory(prefix='nagame-window-check-') as temporary:
         root = Path(temporary)
         images = root / 'images'
@@ -36,7 +41,13 @@ def main():
         env.pop('NAGAME_UI_RESTART', None)
         env.pop('NAGAME_UI_STRESS', None)
         env.pop('NAGAME_UI_FOLDER_NAVIGATION', None)
-        env.pop('WAYLAND_DISPLAY', None)
+        env.pop('NAGAME_UI_WINDOW_STATE', None)
+        if args.wayland:
+            if not (env.get('WAYLAND_DISPLAY') or env.get('WAYLAND_SOCKET')):
+                raise RuntimeError('A Wayland session is required')
+        else:
+            env.pop('WAYLAND_DISPLAY', None)
+            env.pop('WAYLAND_SOCKET', None)
 
         def run(path, extra):
             process = subprocess.Popen([str(binary), str(path)], env=dict(env, **extra))
@@ -49,6 +60,12 @@ def main():
             if result:
                 raise RuntimeError(f'Viewer exited with status {result}')
 
+        geometry_config = root / 'window-config'
+        for mode in ('resize', 'restore', 'maximized'):
+            run(source, {'NAGAME_UI_WINDOW_STATE': mode, 'XDG_CONFIG_HOME': str(geometry_config)})
+        if args.window_state_only:
+            print('PASS: window state save/restart/maximize/fullscreen regression')
+            return
         folders = root / 'folders'
         for folder in ('01', '02'):
             directory = folders / folder

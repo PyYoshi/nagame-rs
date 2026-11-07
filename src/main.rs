@@ -14,6 +14,7 @@ mod settings_ui;
 #[cfg(feature = "ui-smoke")]
 mod ui_smoke;
 mod viewer_io;
+mod window_state;
 
 use gpui::{prelude::*, *};
 use i18n::tr;
@@ -108,10 +109,16 @@ struct Viewer {
     settings_scroll_drag: Option<f32>,
     capture_binding: Option<bindings::Shortcut>,
     settings_error: Option<String>,
+    window_state: window_state::WindowState,
 }
 
 impl Viewer {
-    fn new(path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        path: Option<PathBuf>,
+        window_state: window_state::WindowState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let (settings, settings_error) =
             match Settings::path().and_then(|path| Settings::read(&path)) {
                 Ok(settings) => (settings, None),
@@ -162,7 +169,23 @@ impl Viewer {
             settings_scroll_drag: None,
             capture_binding: None,
             settings_error,
+            window_state,
         };
+        cx.observe_window_bounds(window, |this, window, cx| {
+            this.window_state.record(
+                window.bounds(),
+                window.is_maximized(),
+                window.is_fullscreen(),
+                cx.compositor_name() != "Wayland",
+            );
+        })
+        .detach();
+        cx.on_release(|this, _| this.save_window_state()).detach();
+        cx.on_app_quit(|this, _| {
+            this.save_window_state();
+            std::future::ready(())
+        })
+        .detach();
         let executor = cx.background_executor().clone();
         viewer.ticker = Some(cx.spawn(async move |entity, cx| {
             loop {
@@ -176,6 +199,17 @@ impl Viewer {
             viewer.open(path, cx);
         }
         viewer
+    }
+
+    fn save_window_state(&self) {
+        let result = window_state::WindowState::path().and_then(|path| {
+            self.window_state
+                .save(&path)
+                .map_err(|error| error.to_string())
+        });
+        if let Err(error) = result {
+            eprintln!("{}", tr!("window-state-save-error", error = error));
+        }
     }
 
     fn area(window: &Window) -> [f32; 2] {
@@ -1229,22 +1263,71 @@ fn main() {
             .detach();
         })
         .detach();
+        let mut window_state = window_state::WindowState::path()
+            .map(|path| window_state::WindowState::load(&path))
+            .unwrap_or_default();
+        let mut displays = Vec::new();
+        if let Some(primary) = cx.primary_display() {
+            displays.push(primary.bounds());
+        }
+        for display in cx.displays() {
+            let bounds = display.bounds();
+            if !displays.contains(&bounds) {
+                displays.push(bounds);
+            }
+        }
+        let position_supported = cx.compositor_name() != "Wayland";
+        let restore_position = position_supported && window_state.position.is_some();
+        #[cfg(feature = "ui-smoke")]
+        if std::env::var_os("NAGAME_UI_WINDOW_STATE").is_some() {
+            eprintln!("Window restore: {window_state:?}, displays: {displays:?}");
+        }
+        let bounds = window_state.restored_bounds(&displays, position_supported);
+        window_state.size = [bounds.size.width.into(), bounds.size.height.into()];
+        if position_supported {
+            window_state.position = Some([bounds.origin.x.into(), bounds.origin.y.into()]);
+        }
         let result = cx.open_window(
             WindowOptions {
                 app_id: Some("nagame".into()),
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(1000.), px(740.)),
-                    cx,
-                ))),
-                window_min_size: Some(size(px(1000.), px(300.))),
+                window_bounds: Some(if window_state.maximized {
+                    WindowBounds::Maximized(bounds)
+                } else {
+                    WindowBounds::Windowed(bounds)
+                }),
+                window_min_size: Some(size(
+                    px(1000_f32.min(bounds.size.width.into())),
+                    px(300_f32.min(bounds.size.height.into())),
+                )),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| Viewer::new(path, window, cx)),
+            |window, cx| cx.new(|cx| Viewer::new(path, window_state, window, cx)),
         );
         match result {
-            Ok(_handle) =>
-            {
+            Ok(_handle) => {
+                if restore_position || window_state.maximized {
+                    let executor = cx.background_executor().clone();
+                    cx.spawn(async move |cx| {
+                        executor.timer(Duration::from_millis(100)).await;
+                        let _ = _handle.update(cx, |_, window, _| {
+                            if restore_position
+                                && !window.is_maximized()
+                                && !window.is_fullscreen()
+                                && let Err(error) =
+                                    window_state::restore_position(window, bounds.origin)
+                            {
+                                eprintln!("{}", tr!("window-state-restore-error", error = error));
+                            }
+                            if window_state.maximized
+                                && !window.is_maximized()
+                                && !window.is_fullscreen()
+                            {
+                                window.zoom_window();
+                            }
+                        });
+                    })
+                    .detach();
+                }
                 #[cfg(feature = "ui-smoke")]
                 if std::env::var_os("NAGAME_UI_SMOKE").is_some() {
                     ui_smoke::start(_handle, cx);
