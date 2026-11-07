@@ -42,6 +42,7 @@ def main():
         env.pop('NAGAME_UI_STRESS', None)
         env.pop('NAGAME_UI_FOLDER_NAVIGATION', None)
         env.pop('NAGAME_UI_WINDOW_STATE', None)
+        env.pop('NAGAME_UI_ANIMATION', None)
         if args.wayland:
             if not (env.get('WAYLAND_DISPLAY') or env.get('WAYLAND_SOCKET')):
                 raise RuntimeError('A Wayland session is required')
@@ -74,6 +75,7 @@ def main():
                 png(directory / name, 64, 64, (50, 80, 180, 255))
         run(folders / '02/01.png', {'NAGAME_UI_FOLDER_NAVIGATION': '1'})
         run(images / '0000.png', {'NAGAME_UI_STRESS': '1'})
+        run(source, {'NAGAME_UI_ANIMATION': '1'})
         pages = root / 'pages'
         pages.mkdir()
         png(pages / '01.png', 400, 600, (255, 0, 0, 255))

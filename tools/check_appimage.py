@@ -72,7 +72,7 @@ def main():
                         text = log.read()
                         if process.poll() is not None:
                             raise RuntimeError('Viewer exited: ' + text)
-                        if re.search(r'load \d+ ms cached=\w+ complete=true', text):
+                        if re.search(r'load \d+ ms cached=\w+ animation=\w+', text):
                             time.sleep(0.5)
                             assert process.poll() is None, text
                             assert 'undefined symbol:' not in text, text

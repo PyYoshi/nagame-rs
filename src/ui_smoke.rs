@@ -72,6 +72,311 @@ async fn wait_for_window_state(
     panic!("Timed out waiting for window state");
 }
 
+fn write_gif(path: &std::path::Path, frames: usize, offset: u8) {
+    let mut encoder = image::codecs::gif::GifEncoder::new(std::fs::File::create(path).unwrap());
+    for i in 0..frames {
+        encoder
+            .encode_frame(image::Frame::from_parts(
+                image::RgbaImage::from_pixel(
+                    96,
+                    64,
+                    image::Rgba([offset.wrapping_add(i as u8 * 9), 90, 200, 255]),
+                ),
+                0,
+                0,
+                image::Delay::from_numer_denom_ms(30, 1),
+            ))
+            .unwrap();
+    }
+}
+
+async fn wait_for(
+    handle: WindowHandle<Viewer>,
+    cx: &mut AsyncApp,
+    executor: &BackgroundExecutor,
+    what: &str,
+    predicate: impl Fn(&Viewer) -> bool,
+) {
+    for _ in 0..500 {
+        executor.timer(Duration::from_millis(10)).await;
+        if handle.read_with(cx, |v, _| predicate(v)).unwrap() {
+            return;
+        }
+    }
+    panic!("Timed out waiting for {what}");
+}
+
+/// Samples the frame on screen and returns how many distinct frames were shown.
+async fn shown_frames(
+    handle: WindowHandle<Viewer>,
+    cx: &mut AsyncApp,
+    executor: &BackgroundExecutor,
+    duration: Duration,
+) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    let end = std::time::Instant::now() + duration;
+    while std::time::Instant::now() < end {
+        executor.timer(Duration::from_millis(10)).await;
+        handle
+            .read_with(cx, |v, _| {
+                assert!(v.error.is_none(), "{:?}", v.error);
+                let (_, image, frame) = v.player.as_ref().expect("animation player").current();
+                seen.insert((image.id, frame));
+            })
+            .unwrap();
+    }
+    seen.len()
+}
+
+async fn animation_check(
+    handle: WindowHandle<Viewer>,
+    cx: &mut AsyncApp,
+    executor: &BackgroundExecutor,
+) {
+    use crate::memory::{self, Budget};
+    let root = std::env::temp_dir().join(format!("nagame-ui-animation-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    write_gif(&root.join("a.gif"), 24, 0);
+    image::RgbaImage::from_pixel(96, 64, image::Rgba([20, 160, 40, 255]))
+        .save(root.join("b.png"))
+        .unwrap();
+    write_gif(&root.join("c.gif"), 12, 100);
+    let open = |cx: &mut AsyncApp, name: &str| {
+        let path = root.join(name);
+        handle.update(cx, |v, _, cx| v.open(path, cx)).unwrap();
+    };
+
+    open(cx, "a.gif");
+    wait_for(handle, cx, executor, "resident animation", |v| {
+        !v.loading && v.player.as_ref().is_some_and(|p| p.clip().is_some())
+    })
+    .await;
+    let shown = shown_frames(handle, cx, executor, Duration::from_millis(700)).await;
+    assert!(
+        shown >= 8,
+        "only {shown} frames were shown in 700 ms at 30 ms per frame"
+    );
+    handle
+        .read_with(cx, |v, _| {
+            let player = v.player.as_ref().unwrap();
+            assert_eq!(player.frames(), Some(24));
+            assert!(!player.streaming());
+            assert!(v.ledger.held() >= 96 * 64 * 4 * 24);
+        })
+        .unwrap();
+    eprintln!("PASS: resident GIF plays every frame from chunked images");
+
+    handle
+        .update(cx, |v, _, cx| {
+            v.settings.enlarge_algorithm = crate::resample::Algorithm::Nearest;
+            v.settings.shrink_algorithm = crate::resample::Algorithm::Nearest;
+            v.view.fit = false;
+            v.view.zoom = 3.;
+            cx.notify();
+        })
+        .unwrap();
+    wait_for(handle, cx, executor, "resampled animation", |v| {
+        let chunks = v
+            .player
+            .as_ref()
+            .and_then(|p| p.clip())
+            .map(|c| c.images.len());
+        chunks.is_some() && v.resampling.ready_images().count() == chunks.unwrap()
+    })
+    .await;
+    handle
+        .update(cx, |v, window, _| {
+            let image = v.resampling.ready_image().unwrap();
+            let expected = (96. * 3. * window.scale_factor()).round() as u32;
+            assert_eq!(u32::from(image.size(0).width), expected);
+            assert!(!v.resampling.fallback);
+        })
+        .unwrap();
+    assert!(shown_frames(handle, cx, executor, Duration::from_millis(300)).await >= 4);
+    eprintln!("PASS: nearest-neighbour resampling covers every chunk of a resident GIF");
+
+    let frame = 96 * 64 * 4;
+    memory::override_budget(Some(Budget {
+        resident: frame * 4,
+        ahead: frame * 6,
+        ..Budget::from_total(0)
+    }));
+    key(handle, cx, "f5");
+    wait_for(handle, cx, executor, "streaming animation", |v| {
+        !v.loading && v.player.as_ref().is_some_and(|p| p.streaming())
+    })
+    .await;
+    let mut most = 0;
+    for _ in 0..3 {
+        assert!(shown_frames(handle, cx, executor, Duration::from_millis(500)).await >= 6);
+        handle
+            .read_with(cx, |v, _| {
+                let held: u64 = v.player.as_ref().unwrap().chunks().map(|c| c.bytes).sum();
+                most = most.max(held);
+                assert!(v.resampling.fallback, "streaming frames use GPU scaling");
+            })
+            .unwrap();
+    }
+    assert!(most <= frame * (6 + 1 + 16), "streaming held {most} bytes");
+    eprintln!(
+        "PASS: over-budget GIF streams across loops, releasing played chunks ({most} bytes held at most)"
+    );
+
+    for (budget, label) in [(None, "resident"), (Some(frame * 4), "streaming")] {
+        memory::override_budget(budget.map(|resident| Budget {
+            resident,
+            ahead: frame * 6,
+            ..Budget::from_total(0)
+        }));
+        open(cx, "a.gif");
+        wait_for(handle, cx, executor, "album", |v| {
+            !v.loading && v.album.paths.len() == 3
+        })
+        .await;
+        for direction in ["right", "left"] {
+            for _ in 0..120 {
+                key(handle, cx, direction);
+                executor.timer(Duration::from_millis(8)).await;
+            }
+        }
+        wait_for(handle, cx, executor, "settled navigation", |v| {
+            !v.loading && v.image.is_some()
+        })
+        .await;
+        executor.timer(Duration::from_millis(300)).await;
+        handle
+            .read_with(cx, |v, _| assert!(v.error.is_none(), "{:?}", v.error))
+            .unwrap();
+        eprintln!("PASS: {label}: 240 navigation events across GIF and PNG with chunk retirement");
+    }
+
+    // Resident (24 frames fit), but larger than the lookahead, so level 2 streams it.
+    memory::override_budget(Some(Budget {
+        ahead: frame * 6,
+        ..Budget::from_total(0)
+    }));
+    open(cx, "a.gif");
+    wait_for(handle, cx, executor, "resident animation", |v| {
+        !v.loading && v.player.as_ref().is_some_and(|p| p.clip().is_some())
+    })
+    .await;
+    // Revisit so the complete clip is also in the cache.
+    key(handle, cx, "f5");
+    wait_for(handle, cx, executor, "cached resident animation", |v| {
+        !v.loading && v.player.as_ref().is_some_and(|p| p.clip().is_some())
+    })
+    .await;
+    let clip_bytes = frame * 24;
+    assert!(handle.read_with(cx, |v, _| v.ledger.held()).unwrap() >= clip_bytes);
+    memory::signal_pressure();
+    executor.timer(Duration::from_millis(50)).await;
+    memory::signal_pressure();
+    wait_for(handle, cx, executor, "pressure response", |v| {
+        v.pressure_level == 2 && v.player.as_ref().is_some_and(|p| p.streaming())
+    })
+    .await;
+    // The cache drops the clip too, so the GIF's frames are really released.
+    wait_for(handle, cx, executor, "released clip", |v| {
+        v.ledger.held() < clip_bytes
+    })
+    .await;
+    assert!(shown_frames(handle, cx, executor, Duration::from_millis(500)).await >= 6);
+    handle
+        .read_with(cx, |v, _| {
+            assert_eq!(v.notice.as_deref(), Some(tr!("memory-reduced").as_str()));
+            assert!(v.resampling.ready_images().next().is_none());
+            assert!(v.resampling.fallback);
+        })
+        .unwrap();
+    eprintln!(
+        "PASS: memory pressure trims caches, drops resampling and streams the resident GIF ({} of {clip_bytes} bytes held)",
+        handle.read_with(cx, |v, _| v.ledger.held()).unwrap()
+    );
+    memory::override_budget(None);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn rss_mib() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("VmRSS:"))
+                .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
+        })
+        .map_or(0, |kib| kib / 1024)
+}
+
+/// Process CPU time (user + system) in seconds.
+fn cpu_seconds() -> f64 {
+    std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|stat| {
+            let fields: Vec<_> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+            Some(
+                (fields.get(11)?.parse::<f64>().ok()? + fields.get(12)?.parse::<f64>().ok()?)
+                    / 100.,
+            )
+        })
+        .unwrap_or(0.)
+}
+
+/// Opens each path in turn and reports RSS, CPU, the ledger and the animation mode.
+/// NAGAME_UI_MEMORY_PROFILE=path[:path...][@seconds]; a `pressure` entry signals memory pressure.
+async fn memory_profile(
+    handle: WindowHandle<Viewer>,
+    cx: &mut AsyncApp,
+    executor: &BackgroundExecutor,
+    spec: &str,
+) {
+    let (paths, seconds) = spec
+        .rsplit_once('@')
+        .map_or((spec, 6), |(p, s)| (p, s.parse().unwrap()));
+    eprintln!("PROFILE: start rss {} MiB", rss_mib());
+    for path in paths.split(':') {
+        let path = std::path::PathBuf::from(path);
+        if path.as_os_str() == "pressure" {
+            // Keep the current image and report how much the pressure response releases.
+            crate::memory::signal_pressure();
+            executor.timer(Duration::from_millis(100)).await;
+            crate::memory::signal_pressure();
+        } else {
+            handle
+                .update(cx, |v, _, cx| v.open(path.clone(), cx))
+                .unwrap();
+        }
+        let mut peak = 0;
+        let mut cpu = cpu_seconds();
+        for tick in 0..seconds * 4 {
+            executor.timer(Duration::from_millis(250)).await;
+            peak = peak.max(rss_mib());
+            if tick % 4 == 3 {
+                handle
+                    .read_with(cx, |v, _| {
+                        let mode = match &v.player {
+                            Some(p) if p.streaming() => "streaming",
+                            Some(p) if p.clip().is_some() => "resident",
+                            Some(_) => "decoding",
+                            None => "still",
+                        };
+                        eprintln!(
+                            "PROFILE: {} t={}s rss {} MiB (peak {peak}) cpu {:.0}% held {} MiB budget {} MiB {mode} error={:?}",
+                            path.file_name().unwrap().to_string_lossy(),
+                            (tick + 1) / 4,
+                            rss_mib(),
+                            (cpu_seconds() - std::mem::replace(&mut cpu, cpu_seconds())) * 100.,
+                            v.ledger.held() / crate::memory::MIB,
+                            v.budget.total / crate::memory::MIB,
+                            v.error,
+                        );
+                    })
+                    .unwrap();
+            }
+        }
+    }
+}
+
 pub fn start(handle: WindowHandle<Viewer>, cx: &mut App) {
     let executor = cx.background_executor().clone();
     cx.spawn(async move |cx| {
@@ -165,6 +470,20 @@ pub fn start(handle: WindowHandle<Viewer>, cx: &mut App) {
                 }
             }
             eprintln!("PASS: boundary image navigation and explicit folder commands select different entry images, including prompts and reverse sorting");
+            let any: AnyWindowHandle = handle.into();
+            any.update(cx, |_, window, _| window.remove_window()).unwrap();
+            return;
+        }
+        if let Ok(spec) = std::env::var("NAGAME_UI_MEMORY_PROFILE") {
+            executor.timer(Duration::from_millis(300)).await;
+            memory_profile(handle, cx, &executor, &spec).await;
+            let any: AnyWindowHandle = handle.into();
+            any.update(cx, |_, window, _| window.remove_window()).unwrap();
+            return;
+        }
+        if std::env::var_os("NAGAME_UI_ANIMATION").is_some() {
+            executor.timer(Duration::from_millis(300)).await;
+            animation_check(handle, cx, &executor).await;
             let any: AnyWindowHandle = handle.into();
             any.update(cx, |_, window, _| window.remove_window()).unwrap();
             return;

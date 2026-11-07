@@ -50,21 +50,25 @@ impl Algorithm {
         }
     }
 }
+/// 補間対象の画像の集合を識別する。静止画は1枚、アニメーションは全チャンク。
+/// 先頭の `ImageId` は集合ごとに一意で、チャンクの並びは変わらない。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Key {
     source: ImageId,
+    count: usize,
     width: u32,
     height: u32,
     algorithm: Algorithm,
 }
+type Images = Arc<[Arc<RenderImage>]>;
 struct Request {
     key: Key,
-    source: Arc<RenderImage>,
+    sources: Images,
     generation: u64,
 }
 struct Response {
     key: Key,
-    result: Result<Arc<RenderImage>, String>,
+    result: Result<Images, String>,
 }
 
 fn resize(
@@ -135,10 +139,10 @@ pub struct State {
     receiver: mpsc::Receiver<Response>,
     active: Arc<AtomicU64>,
     generation: u64,
-    wanted: Option<(Key, Arc<RenderImage>)>,
+    wanted: Option<(Key, Images)>,
     since: Instant,
     sent: bool,
-    ready: Option<(Key, Arc<RenderImage>)>,
+    ready: Option<(Key, Images)>,
     pub fallback: bool,
     pub error: Option<String>,
 }
@@ -156,13 +160,21 @@ impl Default for State {
                 if cancellation.load(Ordering::Relaxed) != request.generation {
                     continue;
                 }
-                let result = resize(
-                    &request.source,
-                    request.key.width,
-                    request.key.height,
-                    request.key.algorithm,
-                    || cancellation.load(Ordering::Relaxed) != request.generation,
-                );
+                let cancelled = || cancellation.load(Ordering::Relaxed) != request.generation;
+                let result = request
+                    .sources
+                    .iter()
+                    .map(|source| {
+                        resize(
+                            source,
+                            request.key.width,
+                            request.key.height,
+                            request.key.algorithm,
+                            cancelled,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(Images::from);
                 if cancellation.load(Ordering::Relaxed) == request.generation
                     && output
                         .send(Response {
@@ -192,10 +204,15 @@ impl Default for State {
 impl State {
     #[cfg(feature = "ui-smoke")]
     pub fn ready_image(&self) -> Option<&RenderImage> {
-        self.ready.as_ref().map(|(_, image)| image.as_ref())
+        self.ready.as_ref().map(|(_, images)| images[0].as_ref())
     }
+    #[cfg(any(test, feature = "ui-smoke"))]
     pub fn ready_id(&self) -> Option<ImageId> {
-        self.ready.as_ref().map(|(_, image)| image.id)
+        self.ready.as_ref().map(|(_, images)| images[0].id)
+    }
+    /// 補間済みの画像。台帳とGPU画像の再利用判定に使う。
+    pub fn ready_images(&self) -> impl Iterator<Item = &Arc<RenderImage>> {
+        self.ready.iter().flat_map(|(_, images)| images.iter())
     }
     pub fn clear(&mut self, retired: &mut Vec<Arc<RenderImage>>) {
         self.generation += 1;
@@ -204,37 +221,45 @@ impl State {
         self.sent = false;
         self.error = None;
         self.fallback = false;
-        if let Some((_, image)) = self.ready.take() {
-            retired.push(image);
+        if let Some((_, images)) = self.ready.take() {
+            retired.extend(images.iter().cloned());
         }
     }
+    /// 補間しない状態にする。fallbackは「上限によりGPU表示」を表示するか。
+    pub fn disable(&mut self, fallback: bool, retired: &mut Vec<Arc<RenderImage>>) {
+        if self.wanted.is_some() || self.ready.is_some() || self.error.is_some() {
+            self.clear(retired);
+        }
+        self.fallback = fallback;
+    }
+    /// sourcesの補間済み画像があれば返す。なければ元画像をGPUで拡大縮小して表示する。
+    /// limitは出力の全フレーム合計の上限。
     pub fn prepare(
         &mut self,
-        source: Arc<RenderImage>,
+        sources: &[Arc<RenderImage>],
         target: [u32; 2],
         algorithm: Algorithm,
+        limit: u64,
         retired: &mut Vec<Arc<RenderImage>>,
-    ) -> Arc<RenderImage> {
+    ) -> Option<Images> {
         let [width, height] = target;
+        let frames: u64 = sources.iter().map(|s| s.frame_count() as u64).sum();
         let fallback = width == 0
             || height == 0
             || width > 16384
             || height > 16384
-            || u64::from(width) * u64::from(height) * 4 * source.frame_count() as u64
-                > 128 * 1024 * 1024;
-        let original = source.size(0);
+            || u64::from(width) * u64::from(height) * 4 * frames > limit;
+        let original = sources.first()?.size(0);
         if algorithm == Algorithm::Gpu
             || fallback
             || (width == u32::from(original.width) && height == u32::from(original.height))
         {
-            if self.wanted.is_some() || self.ready.is_some() {
-                self.clear(retired);
-            }
-            self.fallback = algorithm != Algorithm::Gpu && fallback;
-            return source;
+            self.disable(algorithm != Algorithm::Gpu && fallback, retired);
+            return None;
         }
         let key = Key {
-            source: source.id,
+            source: sources[0].id,
+            count: sources.len(),
             width,
             height,
             algorithm,
@@ -242,13 +267,12 @@ impl State {
         if self.wanted.as_ref().map(|(k, _)| *k) != Some(key) {
             self.clear(retired);
             self.since = Instant::now();
-            self.wanted = Some((key, source.clone()));
+            self.wanted = Some((key, sources.into()));
         }
         self.ready
             .as_ref()
             .filter(|(k, _)| *k == key)
-            .map(|(_, image)| image.clone())
-            .unwrap_or(source)
+            .map(|(_, images)| images.clone())
     }
     pub fn pending(&self) -> bool {
         self.wanted.is_some() && self.ready.is_none() && self.error.is_none()
@@ -260,9 +284,9 @@ impl State {
                 continue;
             }
             match response.result {
-                Ok(image) => {
-                    if let Some((_, old)) = self.ready.replace((response.key, image)) {
-                        retired.push(old);
+                Ok(images) => {
+                    if let Some((_, old)) = self.ready.replace((response.key, images)) {
+                        retired.extend(old.iter().cloned());
                     }
                 }
                 Err(error) => self.error = Some(error),
@@ -271,14 +295,14 @@ impl State {
         }
         if !self.sent
             && self.since.elapsed() >= Duration::from_millis(60)
-            && let Some((key, source)) = &self.wanted
+            && let Some((key, sources)) = &self.wanted
         {
             self.sent = true;
             if self
                 .sender
                 .send(Request {
                     key: *key,
-                    source: source.clone(),
+                    sources: sources.clone(),
                     generation: self.generation,
                 })
                 .is_err()
@@ -307,23 +331,24 @@ mod tests {
             sync::Arc,
             time::{Duration, Instant},
         };
+        let limit = 128 * 1024 * 1024;
         let source = Arc::new(RenderImage::new(vec![image::Frame::new(
             image::RgbaImage::new(8, 8),
         )]));
+        let sources = std::slice::from_ref(&source);
         let mut state = State::default();
         let mut retired = Vec::new();
-        assert_eq!(
+        assert!(
             state
-                .prepare(source.clone(), [16, 16], Algorithm::Gpu, &mut retired)
-                .id,
-            source.id
+                .prepare(sources, [16, 16], Algorithm::Gpu, limit, &mut retired)
+                .is_none()
         );
         assert!(!state.pending());
-        state.prepare(source.clone(), [16, 16], Algorithm::Nearest, &mut retired);
+        state.prepare(sources, [16, 16], Algorithm::Nearest, limit, &mut retired);
         state.since = Instant::now() - Duration::from_millis(100);
         state.tick(&mut retired);
         std::thread::sleep(Duration::from_millis(10));
-        state.prepare(source.clone(), [24, 24], Algorithm::Linear, &mut retired);
+        state.prepare(sources, [24, 24], Algorithm::Linear, limit, &mut retired);
         state.tick(&mut retired);
         assert!(state.ready_id().is_none());
         state.since = Instant::now() - Duration::from_millis(100);
@@ -332,23 +357,91 @@ mod tests {
             state.tick(&mut retired);
             std::thread::sleep(Duration::from_millis(2));
         }
-        let output = state.prepare(source.clone(), [24, 24], Algorithm::Linear, &mut retired);
-        assert_eq!(u32::from(output.size(0).width), 24);
-        assert_ne!(output.id, source.id);
-        assert_eq!(
+        let output = state
+            .prepare(sources, [24, 24], Algorithm::Linear, limit, &mut retired)
+            .unwrap();
+        assert_eq!(u32::from(output[0].size(0).width), 24);
+        assert_ne!(output[0].id, source.id);
+        assert!(
             state
                 .prepare(
-                    source.clone(),
+                    sources,
                     [u32::MAX, u32::MAX],
                     Algorithm::Lanczos3,
+                    limit,
                     &mut retired
                 )
-                .id,
-            source.id
+                .is_none()
         );
         assert!(state.fallback);
         assert!(!state.pending());
         assert_eq!(retired.len(), 1);
+        // The output limit covers every frame of every image in the set.
+        assert!(
+            state
+                .prepare(
+                    sources,
+                    [24, 24],
+                    Algorithm::Linear,
+                    24 * 24 * 4 - 1,
+                    &mut retired
+                )
+                .is_none()
+        );
+        assert!(state.fallback);
+    }
+    #[test]
+    fn image_sets_resize_together_and_keep_their_order() {
+        use super::State;
+        use std::{
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+        let chunk = |color| {
+            Arc::new(RenderImage::new(vec![
+                image::Frame::new(
+                    image::RgbaImage::from_pixel(4, 4, image::Rgba(color))
+                );
+                2
+            ]))
+        };
+        let sources = [chunk([255, 0, 0, 255]), chunk([0, 0, 255, 255])];
+        let mut state = State::default();
+        let mut retired = Vec::new();
+        assert!(
+            state
+                .prepare(
+                    &sources,
+                    [8, 8],
+                    Algorithm::Nearest,
+                    8 * 8 * 4 * 4,
+                    &mut retired
+                )
+                .is_none()
+        );
+        state.since = Instant::now() - Duration::from_millis(100);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while state.ready_id().is_none() && Instant::now() < deadline {
+            state.tick(&mut retired);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let output = state
+            .prepare(
+                &sources,
+                [8, 8],
+                Algorithm::Nearest,
+                8 * 8 * 4 * 4,
+                &mut retired,
+            )
+            .unwrap();
+        assert_eq!(output.len(), 2);
+        assert_eq!(output[1].frame_count(), 2);
+        assert_eq!(&output[0].as_bytes(1).unwrap()[..4], &[255, 0, 0, 255]);
+        assert_eq!(&output[1].as_bytes(0).unwrap()[..4], &[0, 0, 255, 255]);
+        assert_eq!(state.ready_images().count(), 2);
+        state.disable(true, &mut retired);
+        assert!(state.fallback);
+        assert_eq!(retired.len(), 2);
     }
     #[test]
     fn filtered_resize_preserves_opaque_and_translucent_colors() {

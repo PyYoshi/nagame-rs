@@ -90,6 +90,8 @@ pub struct Settings {
     pub right_to_left: bool,
     pub landscape_single: bool,
     pub manga_reverse_controls: bool,
+    /// 画像データに使うメモリーの上限（MiB）。0は自動。
+    pub memory_limit_mib: u32,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -116,6 +118,7 @@ impl Default for Settings {
             right_to_left: true,
             landscape_single: true,
             manga_reverse_controls: true,
+            memory_limit_mib: 0,
         }
     }
 }
@@ -124,6 +127,9 @@ impl Settings {
         self.slideshow_seconds = self.slideshow_seconds.clamp(1, 3600);
         self.skip_count = self.skip_count.clamp(1, 10000);
         self.background &= 0xffffff;
+        if self.memory_limit_mib != 0 {
+            self.memory_limit_mib = self.memory_limit_mib.clamp(128, 1024 * 1024);
+        }
     }
     pub fn path() -> Result<PathBuf, String> {
         if let Some(path) = std::env::var_os("XDG_CONFIG_HOME").filter(|p| !p.is_empty()) {
@@ -194,6 +200,7 @@ mod tests {
             enlarge_algorithm: crate::resample::Algorithm::Nearest,
             boundary: BoundaryAction::Folder,
             reverse: true,
+            memory_limit_mib: 2048,
             ..Settings::default()
         };
         saved.save(&path).unwrap();
@@ -204,6 +211,9 @@ mod tests {
         assert_eq!(old.slideshow_seconds, 1);
         assert_eq!(old.sort, SortOrder::Size);
         assert!(old.prefetch);
+        assert_eq!(old.memory_limit_mib, 0);
+        fs::write(&path, br#"{"memory_limit_mib":1}"#).unwrap();
+        assert_eq!(Settings::read(&path).unwrap().memory_limit_mib, 128);
         fs::write(&path, b"broken JSON").unwrap();
         assert!(Settings::read(&path).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"broken JSON");

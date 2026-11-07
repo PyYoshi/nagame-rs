@@ -1,11 +1,12 @@
 //! ファイルを復号し、向きと回転を反映したBGRAフレームへ変換する。
-//! GIFは先頭フレームの先行通知とフレーム間の中止に対応する。
+//! GIFは `GifFrames` で1フレームずつ取り出し、アニメーションの逐次再生に使う。
 
 use crate::i18n::tr;
 use image::{AnimationDecoder, Frame, ImageDecoder, ImageFormat, ImageReader, Limits};
 use std::{fs::File, io::BufReader, path::Path};
 
-const BUDGET: u64 = 128 * 1024 * 1024;
+/// 呼び出し側が上限を決めない場合（性能計測・テスト）の展開上限。1辺16,384ピクセルのRGBA。
+pub const DEFAULT_LIMIT: u64 = 16384 * 16384 * 4;
 
 /// 表示用BGRAフレームと、向き・追加回転を反映した寸法。
 /// Frameのバッファ型はRgbaImageだが、色順はRGBAではない。
@@ -14,24 +15,42 @@ pub struct Decoded {
     pub dimensions: [f32; 2],
 }
 
-fn limits() -> Limits {
+fn limits(max_alloc: u64) -> Limits {
     let mut limits = Limits::default();
     limits.max_image_width = Some(16384);
     limits.max_image_height = Some(16384);
-    limits.max_alloc = Some(BUDGET);
+    limits.max_alloc = Some(max_alloc);
     limits
 }
 
-pub fn decode(path: &Path, turns: u8) -> Result<Decoded, String> {
-    decode_progressive(path, turns, |_| {}, || false)
+fn limit_error(limit: u64) -> String {
+    let limit = limit / (1024 * 1024);
+    tr!("image-limit", limit = limit)
 }
 
-/// GIFの先頭をpreviewへ通知し、全フレームを返す。
+/// 内容から判定したGIFか。拡張子は見ない。
+#[allow(dead_code)] // decode-bench shares this module but does not open animations.
+pub fn is_gif(path: &Path) -> bool {
+    ImageReader::open(path)
+        .and_then(|reader| reader.with_guessed_format())
+        .is_ok_and(|reader| reader.format() == Some(ImageFormat::Gif))
+}
+
+/// 全フレームを返す。GIFの合計とその他の画像は `DEFAULT_LIMIT` まで。
+/// decode-benchとテストが使う。
+#[allow(dead_code)]
+pub fn decode(path: &Path, turns: u8) -> Result<Decoded, String> {
+    decode_limited(path, turns, DEFAULT_LIMIT, true, || false)
+}
+
+/// 静止画、またはGIFの先頭フレーム（all_framesがfalseの場合）を返す。
+/// limitは1枚の展開上限。all_framesのGIFは全フレームの合計にも適用する。
 /// cancelledはGIFのフレーム間で確認し、静止画像の復号途中は中断しない。
-pub fn decode_progressive(
+pub fn decode_limited(
     path: &Path,
     turns: u8,
-    mut preview: impl FnMut(Frame),
+    limit: u64,
+    all_frames: bool,
     cancelled: impl Fn() -> bool,
 ) -> Result<Decoded, String> {
     let ext = path
@@ -40,49 +59,92 @@ pub fn decode_progressive(
         .unwrap_or("")
         .to_ascii_lowercase();
     if matches!(ext.as_str(), "heic" | "heif" | "hif" | "avif") {
-        return finish(vec![Frame::new(decode_heif(path)?)], turns);
+        return finish(vec![Frame::new(decode_heif(path, limit)?)], turns);
     }
     let mut reader = ImageReader::open(path)
         .map_err(|e| e.to_string())?
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
-    reader.limits(limits());
-    let frames = if reader.format() == Some(ImageFormat::Gif) {
-        let mut decoder = image::codecs::gif::GifDecoder::new(BufReader::new(
-            File::open(path).map_err(|e| e.to_string())?,
-        ))
-        .map_err(|e| e.to_string())?;
-        decoder.set_limits(limits()).map_err(|e| e.to_string())?;
+    reader.limits(limits(limit));
+    if reader.format() == Some(ImageFormat::Gif) {
         let mut frames = Vec::new();
         let mut bytes = 0u64;
-        for frame in decoder.into_frames() {
+        for frame in gif_frames(path, turns, limit)? {
             if cancelled() {
                 return Err("cancelled".into());
             }
-            let frame = frame.map_err(|e| e.to_string())?;
-            check_size(frame.buffer().width(), frame.buffer().height())?;
+            let frame = frame?;
             bytes += frame.buffer().len() as u64;
-            if bytes > BUDGET || frames.len() >= 1000 {
-                return Err(tr!("gif-limit"));
-            }
-            if frames.is_empty() {
-                preview(convert(frame.clone(), turns));
+            if bytes > limit {
+                return Err(limit_error(limit));
             }
             frames.push(frame);
+            if !all_frames {
+                break;
+            }
         }
-        frames
-    } else {
-        let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
-        let orientation = decoder.orientation().map_err(|e| e.to_string())?;
-        let (width, height) = decoder.dimensions();
-        if u64::from(width) * u64::from(height) * 4 > BUDGET {
-            return Err(tr!("image-limit"));
+        return dimensions_of(frames);
+    }
+    let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let orientation = decoder.orientation().map_err(|e| e.to_string())?;
+    let (width, height) = decoder.dimensions();
+    if u64::from(width) * u64::from(height) * 4 > limit {
+        return Err(limit_error(limit));
+    }
+    let mut image = image::DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+    image.apply_orientation(orientation);
+    finish(vec![Frame::new(image.into_rgba8())], turns)
+}
+
+/// GIFのフレームを先頭から順に、回転済みBGRAで返す。各フレームはキャンバス全体の大きさ。
+/// GIFの差分描画と「前の状態に戻す」処理は前のフレームに依存するため、途中から読めない。
+pub struct GifFrames {
+    frames: image::Frames<'static>,
+    turns: u8,
+    limit: u64,
+    done: bool,
+}
+impl Iterator for GifFrames {
+    type Item = Result<Frame, String>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
         }
-        let mut image = image::DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
-        image.apply_orientation(orientation);
-        vec![Frame::new(image.into_rgba8())]
-    };
-    finish(frames, turns)
+        let result = match self.frames.next()? {
+            Ok(frame) => {
+                let (width, height) = frame.buffer().dimensions();
+                check_size(width, height)
+                    .and_then(|()| {
+                        if u64::from(width) * u64::from(height) * 4 > self.limit {
+                            Err(limit_error(self.limit))
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .map(|()| convert(frame, self.turns))
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        self.done = result.is_err();
+        Some(result)
+    }
+}
+
+/// limitは1フレームの展開上限。デコーダー内部ではキャンバスと作業用に約3枚分を確保する。
+pub fn gif_frames(path: &Path, turns: u8, limit: u64) -> Result<GifFrames, String> {
+    let mut decoder = image::codecs::gif::GifDecoder::new(BufReader::new(
+        File::open(path).map_err(|e| e.to_string())?,
+    ))
+    .map_err(|e| e.to_string())?;
+    decoder
+        .set_limits(limits(limit.saturating_mul(3)))
+        .map_err(|e| e.to_string())?;
+    Ok(GifFrames {
+        frames: decoder.into_frames(),
+        turns,
+        limit,
+        done: false,
+    })
 }
 
 fn convert(frame: Frame, turns: u8) -> Frame {
@@ -109,15 +171,15 @@ fn check_size(width: u32, height: u32) -> Result<(), String> {
 }
 
 fn finish(frames: Vec<Frame>, turns: u8) -> Result<Decoded, String> {
-    let converted: Vec<_> = frames.into_iter().map(|f| convert(f, turns)).collect();
-    let first = converted.first().ok_or(tr!("no-frames"))?;
+    dimensions_of(frames.into_iter().map(|f| convert(f, turns)).collect())
+}
+
+fn dimensions_of(frames: Vec<Frame>) -> Result<Decoded, String> {
+    let first = frames.first().ok_or(tr!("no-frames"))?;
     let (width, height) = first.buffer().dimensions();
     check_size(width, height)?;
     let dimensions = [width as f32, height as f32];
-    Ok(Decoded {
-        frames: converted,
-        dimensions,
-    })
+    Ok(Decoded { frames, dimensions })
 }
 
 /// Read display geometry without decoding the pixel buffer (used for manga boundaries).
@@ -139,7 +201,7 @@ pub fn dimensions(path: &Path) -> Result<[u32; 2], String> {
         .map_err(|e| e.to_string())?
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
-    reader.limits(limits());
+    reader.limits(limits(DEFAULT_LIMIT));
     let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
     let (w, h) = decoder.dimensions();
     use image::metadata::Orientation::*;
@@ -150,14 +212,14 @@ pub fn dimensions(path: &Path) -> Result<[u32; 2], String> {
     Ok(if swapped { [h, w] } else { [w, h] })
 }
 
-fn decode_heif(path: &Path) -> Result<image::RgbaImage, String> {
+fn decode_heif(path: &Path, limit: u64) -> Result<image::RgbaImage, String> {
     use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let lib = LibHeif::new();
     let context = HeifContext::read_from_bytes(&bytes).map_err(|e| e.to_string())?;
     let handle = context.primary_image_handle().map_err(|e| e.to_string())?;
     let (w, h) = (handle.width(), handle.height());
-    if w > 16384 || h > 16384 || u64::from(w) * u64::from(h) * 4 > BUDGET {
+    if w > 16384 || h > 16384 || u64::from(w) * u64::from(h) * 4 > limit {
         return Err(tr!("heif-limit"));
     }
     // libheif applies container irot/imir transforms and converts high bit depth
@@ -171,7 +233,7 @@ fn decode_heif(path: &Path) -> Result<image::RgbaImage, String> {
         .ok_or(tr!("rgba-plane-missing"))?;
     let (w, h) = (image.width(), image.height());
     check_size(w, h)?;
-    if w > 16384 || h > 16384 || u64::from(w) * u64::from(h) * 4 > BUDGET {
+    if w > 16384 || h > 16384 || u64::from(w) * u64::from(h) * 4 > limit {
         return Err(tr!("image-too-large"));
     }
     let mut pixels = image::RgbaImage::new(w, h);
@@ -335,21 +397,43 @@ mod modern_format_tests {
         }
     }
     #[test]
-    fn gif_preview_precedes_completion_and_load_can_cancel() {
+    fn gif_frames_stream_rotated_bgra_and_limits_apply_per_frame() {
         let path =
-            std::env::temp_dir().join(format!("nagame-progressive-{}.gif", std::process::id()));
+            std::env::temp_dir().join(format!("nagame-gif-stream-{}.gif", std::process::id()));
         {
             let mut encoder = image::codecs::gif::GifEncoder::new(File::create(&path).unwrap());
-            for _ in 0..3 {
+            for (color, ms) in [([255, 0, 0, 255], 0), ([0, 0, 255, 255], 70)] {
                 encoder
-                    .encode_frame(Frame::new(image::RgbaImage::new(2, 2)))
+                    .encode_frame(Frame::from_parts(
+                        image::RgbaImage::from_pixel(3, 2, image::Rgba(color)),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(ms, 1),
+                    ))
                     .unwrap();
             }
         }
-        let shown = std::cell::Cell::new(false);
-        let result = decode_progressive(&path, 0, |_| shown.set(true), || shown.get());
-        assert!(shown.get());
-        assert!(result.is_err());
+        assert!(is_gif(&path));
+        let frames: Vec<_> = gif_frames(&path, 1, DEFAULT_LIMIT)
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].buffer().dimensions(), (2, 3));
+        assert_eq!(frames[0].buffer().get_pixel(0, 0).0, [0, 0, 255, 255]);
+        assert_eq!(frames[1].buffer().get_pixel(1, 2).0, [255, 0, 0, 255]);
+        assert_eq!(frames[0].delay().numer_denom_ms(), (0, 1));
+        assert_eq!(frames[1].delay().numer_denom_ms(), (70, 1));
+        // One frame is 24 bytes: the first frame alone fits, the whole GIF does not.
+        let first = decode_limited(&path, 0, 24, false, || false).unwrap();
+        assert_eq!(first.frames.len(), 1);
+        assert_eq!(first.dimensions, [3., 2.]);
+        assert!(decode_limited(&path, 0, 24, true, || false).is_err());
+        let mut tiny = gif_frames(&path, 0, 23).unwrap();
+        assert!(tiny.next().unwrap().is_err());
+        assert!(tiny.next().is_none());
+        let cancelled = decode_limited(&path, 0, DEFAULT_LIMIT, true, || true);
+        assert_eq!(cancelled.err().as_deref(), Some("cancelled"));
         std::fs::remove_file(path).unwrap();
     }
 }

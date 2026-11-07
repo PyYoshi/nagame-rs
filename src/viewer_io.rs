@@ -6,7 +6,21 @@ use crate::{Command, Viewer};
 use gpui::{
     AnyElement, Context, PathPromptOptions, RenderImage, div, prelude::*, px, relative, rgb, rgba,
 };
-use std::{io::Cursor, path::Path};
+use std::{
+    io::Cursor,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+/// GIFへ書き出すフレームの出どころ。静止画以外の形式には先頭画像だけを使う。
+pub(crate) enum Frames {
+    /// 表示中の画像のフレーム（静止画・見開き）。
+    Image,
+    /// 全フレームを保持したアニメーション。
+    Clip(Arc<crate::animation::Clip>),
+    /// 逐次デコード中のアニメーション。元ファイルから順に読み直す（回転、1フレームの上限）。
+    File(PathBuf, u8, u64),
+}
 
 fn rgba_pixels(image: &RenderImage, index: usize) -> Result<image::RgbaImage, String> {
     let size = image.size(index);
@@ -27,7 +41,33 @@ fn png(image: &RenderImage) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())?;
     Ok(output.into_inner())
 }
-fn save(image: &RenderImage, path: &Path) -> Result<(), String> {
+type RgbaFrame = Result<(image::RgbaImage, image::Delay), String>;
+/// 先頭からフレームをRGBAと遅延で返す。逐次デコード中のアニメーションも一定のメモリーで書き出す。
+fn rgba_frames<'a>(
+    image: &'a RenderImage,
+    frames: &'a Frames,
+) -> Result<Box<dyn Iterator<Item = RgbaFrame> + 'a>, String> {
+    let of = |image: &'a RenderImage| {
+        (0..image.frame_count())
+            .map(move |index| Ok((rgba_pixels(image, index)?, image.delay(index))))
+    };
+    Ok(match frames {
+        Frames::Image => Box::new(of(image)),
+        Frames::Clip(clip) => Box::new(clip.images.iter().flat_map(move |image| of(image))),
+        Frames::File(path, turns, limit) => Box::new(
+            crate::decoder::gif_frames(path, *turns, *limit)?.map(|frame| {
+                let frame = frame?;
+                let delay = frame.delay();
+                let mut pixels = frame.into_buffer();
+                for pixel in pixels.as_chunks_mut::<4>().0 {
+                    pixel.swap(0, 2);
+                }
+                Ok((pixels, delay))
+            }),
+        ),
+    })
+}
+fn save(image: &RenderImage, frames: &Frames, path: &Path) -> Result<(), String> {
     let format = if path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("jpe"))
@@ -54,14 +94,10 @@ fn save(image: &RenderImage, path: &Path) -> Result<(), String> {
         encoder
             .set_repeat(image::codecs::gif::Repeat::Infinite)
             .map_err(|e| e.to_string())?;
-        for index in 0..image.frame_count() {
+        for frame in rgba_frames(image, frames)? {
+            let (pixels, delay) = frame?;
             encoder
-                .encode_frame(image::Frame::from_parts(
-                    rgba_pixels(image, index)?,
-                    0,
-                    0,
-                    image.delay(index),
-                ))
+                .encode_frame(image::Frame::from_parts(pixels, 0, 0, delay))
                 .map_err(|e| e.to_string())?;
         }
     } else {
@@ -201,6 +237,18 @@ impl Viewer {
             self.notice = Some(tr!("no-open-image"));
             return;
         };
+        let frames = match &self.player {
+            None => Frames::Image,
+            Some(player) => match player.clip() {
+                Some(clip) => Frames::Clip(clip.clone()),
+                None => {
+                    // The frames were already decoded once for playback; a lower budget
+                    // now (e.g. under memory pressure) must not make the export fail.
+                    let (path, turns) = player.source();
+                    Frames::File(path.to_path_buf(), turns, crate::decoder::DEFAULT_LIMIT)
+                }
+            },
+        };
         let name = format!(
             "{}_view.png",
             self.album
@@ -236,7 +284,7 @@ impl Viewer {
                 }
             };
             let output = path.clone();
-            let task = executor.spawn(async move { save(&image, &output) });
+            let task = executor.spawn(async move { save(&image, &frames, &output) });
             let result = task.await;
             let _ = viewer.update(cx, |this, cx| {
                 match result {
@@ -260,7 +308,10 @@ impl Viewer {
         self.info_visible = true;
         self.info_text = Some(tr!("loading-info"));
         let dimensions = self.dimensions;
-        let frames = self.image.as_ref().map(|p| p.frame_count()).unwrap_or(0);
+        let frames = match &self.player {
+            Some(player) => player.frames(),
+            None => self.image.as_ref().map(|p| p.frame_count()),
+        };
         let pages = self.pages;
         let task = cx.background_executor().spawn(async move {
             let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
@@ -339,7 +390,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         for name in ["image.png", "image.jpg", "image.JPE"] {
             let path = root.join(name);
-            save(&image, &path).unwrap();
+            save(&image, &Frames::Image, &path).unwrap();
             let decoded = image::load_from_memory(&std::fs::read(&path).unwrap())
                 .unwrap()
                 .into_rgba8();
@@ -348,12 +399,77 @@ mod tests {
         }
         let unsupported = root.join("keep.heic");
         std::fs::write(&unsupported, b"keep original").unwrap();
-        assert!(save(&image, &unsupported).is_err());
+        assert!(save(&image, &Frames::Image, &unsupported).is_err());
         assert_eq!(std::fs::read(unsupported).unwrap(), b"keep original");
         let clipboard = image::load_from_memory(&png(&image).unwrap())
             .unwrap()
             .into_rgba8();
         assert_eq!(clipboard.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn animations_export_every_frame_from_memory_or_by_redecoding_the_file() {
+        use crate::animation::{Limits, Player, Resume, Stream};
+        let root = std::env::temp_dir().join(format!("nagame-export-gif-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.gif");
+        {
+            let mut encoder =
+                image::codecs::gif::GifEncoder::new(std::fs::File::create(&source).unwrap());
+            for (color, ms) in [([255, 0, 0, 255], 40), ([0, 0, 255, 255], 80)] {
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        image::RgbaImage::from_pixel(3, 2, image::Rgba(color)),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(ms, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let limits = Limits {
+            frame: crate::decoder::DEFAULT_LIMIT,
+            resident: u64::MAX,
+            ahead: u64::MAX,
+        };
+        let (sender, stored) = std::sync::mpsc::channel();
+        let stream = Stream::start(
+            source.clone(),
+            1,
+            limits,
+            Resume::default(),
+            false,
+            move |c| sender.send(c).unwrap(),
+        );
+        let first = stream.first(|| false).unwrap().unwrap();
+        let clip = stored
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        drop(Player::from_clip(
+            clip.clone(),
+            source.clone(),
+            1,
+            std::time::Instant::now(),
+        ));
+        for (name, frames) in [
+            ("clip.gif", Frames::Clip(clip)),
+            (
+                "file.gif",
+                Frames::File(source.clone(), 1, crate::decoder::DEFAULT_LIMIT),
+            ),
+        ] {
+            let path = root.join(name);
+            save(&first.image, &frames, &path).unwrap();
+            let decoded = crate::decoder::decode(&path, 0).unwrap();
+            assert_eq!(decoded.frames.len(), 2, "{name}");
+            // Rotated 90°, original colors (BGRA after decoding) and delays are kept.
+            assert_eq!(decoded.dimensions, [2., 3.], "{name}");
+            assert_eq!(
+                decoded.frames[0].buffer().get_pixel(0, 0).0,
+                [0, 0, 255, 255]
+            );
+            assert_eq!(decoded.frames[1].delay().numer_denom_ms(), (80, 1));
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 }

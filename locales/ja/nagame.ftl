@@ -170,6 +170,10 @@ field-interval = スライドショーの表示秒数
 
 field-prefetch = 前後の画像を先読みする
 
+field-memory = 画像に使うメモリーの上限
+
+memory-auto = 自動
+
 field-wheel = ホイールでズーム（Ctrlで画像送り）
 
 field-shrink = 縮小表示の補間方法
@@ -203,6 +207,8 @@ resampler-stopped = 補間処理スレッドが終了しました
 path-copied = パスをコピーしました
 
 image-copied = 画像をコピーしました
+
+memory-reduced = メモリー不足のため、キャッシュと先読みを減らしました
 
 no-open-image = 画像が開かれていません
 
@@ -262,9 +268,7 @@ image-data-missing = 画像データがありません
 
 no-frames = 画像にフレームがありません
 
-gif-limit = GIFの展開サイズが上限（128 MiB / 1000フレーム）を超えています
-
-image-limit = 画像の展開サイズが128 MiBを超えています
+image-limit = 画像の展開サイズが上限（{ $limit } MiB）を超えています
 
 heif-limit = HEIF画像の展開サイズが上限を超えています
 

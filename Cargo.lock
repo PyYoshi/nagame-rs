@@ -3442,6 +3442,7 @@ dependencies = [
  "i18n-embed",
  "i18n-embed-fl",
  "image",
+ "libc",
  "libheif-rs",
  "rust-embed",
  "serde",

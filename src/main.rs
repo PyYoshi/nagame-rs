@@ -1,9 +1,11 @@
 //! Nagameの起動とViewer状態、入力、非同期結果の反映、描画。
 //! UI補助モジュールも同じViewerへ実装を追加する。設計はdocs/architecture.mdを参照。
 
+mod animation;
 mod bindings;
 mod decoder;
 mod i18n;
+mod memory;
 mod menu_ui;
 mod model;
 mod pipeline;
@@ -76,10 +78,24 @@ struct Viewer {
     focus: FocusHandle,
     album: Album,
     view: Viewport,
+    /// 静止画、またはアニメーションの先頭フレーム。保存・コピーの元解像度画像。
     image: Option<Arc<RenderImage>>,
+    player: Option<animation::Player>,
     dimensions: [f32; 2],
     retired: Vec<Arc<RenderImage>>,
     resampling: resample::State,
+    ledger: Arc<memory::Ledger>,
+    budget: memory::Budget,
+    budget_at: Instant,
+    /// 保持中の画像が変わり、台帳の更新が必要。
+    live_dirty: bool,
+    pressure_seen: u64,
+    /// 0: 通常、1: キャッシュと先読みを削減、2: 補間結果と保持中のアニメーションも削減。
+    pressure_level: u8,
+    /// 解放した小さなバッファをOSへ返す予定時刻。
+    release_at: Option<Instant>,
+    /// 次の台帳更新で、表示中以外のキャッシュをすべて捨てる。
+    trim_aggressive: bool,
     turns: u8,
     generation: u64,
     loading: bool,
@@ -125,9 +141,12 @@ impl Viewer {
                 Err(error) => (Settings::default(), Some(error)),
             };
         i18n::activate(settings.language);
+        memory::set_limit_mib(settings.memory_limit_mib);
+        memory::start_monitor();
         let focus = cx.focus_handle();
         window.focus(&focus);
-        let (requests, responses) = pipeline::worker();
+        let ledger = Arc::new(memory::Ledger::default());
+        let (requests, responses) = pipeline::worker(ledger.clone());
         let mut viewer = Self {
             focus,
             album: Album::default(),
@@ -137,9 +156,18 @@ impl Viewer {
                 ..Viewport::default()
             },
             image: None,
+            player: None,
             dimensions: [1., 1.],
             retired: vec![],
             resampling: resample::State::default(),
+            budget: memory::current(ledger.held()),
+            ledger,
+            budget_at: Instant::now(),
+            live_dirty: false,
+            pressure_seen: memory::pressure_events(),
+            pressure_level: 0,
+            release_at: None,
+            trim_aggressive: false,
             turns: 0,
             generation: 0,
             loading: false,
@@ -221,10 +249,103 @@ impl Viewer {
     }
 
     fn clear_image(&mut self) {
+        let held = self.live_images().map(|(_, bytes)| bytes).sum::<u64>();
         self.resampling.clear(&mut self.retired);
+        if let Some(player) = self.player.take() {
+            player.retire(&mut self.retired);
+        }
         if let Some(image) = self.image.take() {
             self.retired.push(image);
         }
+        self.live_dirty = true;
+        if held >= 32 * memory::MIB {
+            // Retired buffers are freed after two frames; return the heap afterwards.
+            self.release_at = Some(Instant::now() + Duration::from_millis(500));
+        }
+    }
+
+    /// 表示のために保持している画像と容量。チャンクは先頭画像と重複し得る。
+    fn live_images(&self) -> impl Iterator<Item = (ImageId, u64)> + '_ {
+        self.image
+            .iter()
+            .map(|image| (image.id, memory::image_bytes(image)))
+            .chain(
+                self.player
+                    .iter()
+                    .flat_map(|player| player.chunks())
+                    .map(|chunk| (chunk.image.id, chunk.bytes)),
+            )
+            .chain(
+                self.resampling
+                    .ready_images()
+                    .map(|image| (image.id, memory::image_bytes(image))),
+            )
+    }
+
+    /// 台帳を更新し、キャッシュに予算の再計算を求める。
+    fn publish_live(&mut self) {
+        self.live_dirty = false;
+        let images: Vec<_> = self.live_images().collect();
+        self.ledger.replace(memory::Holder::Viewer, images);
+        // Trim after the ledger shows what is still on screen (e.g. a GIF that just
+        // moved to streaming keeps only its first and current chunks).
+        self.requests
+            .trim(std::mem::take(&mut self.trim_aggressive));
+        self.refresh_budget();
+    }
+
+    fn refresh_budget(&mut self) {
+        self.budget = memory::current(self.ledger.held());
+        self.budget_at = Instant::now();
+    }
+
+    /// メモリ逼迫の通知に段階的に応じ、逼迫が収まったら戻す。
+    fn respond_to_pressure(&mut self, cx: &mut Context<Self>) {
+        let events = memory::pressure_events();
+        if events != self.pressure_seen {
+            self.pressure_seen = events;
+            self.pressure_level = (self.pressure_level + 1).min(2);
+            self.trim_aggressive = true;
+            self.refresh_budget();
+            let limits = self.animation_limits();
+            // Level 1 limits decoding (lookahead, resident attempts); level 2 also moves a
+            // fully kept GIF to streaming.
+            if let Some(player) = &mut self.player
+                && (self.pressure_level >= 2 || player.decoding())
+            {
+                player.reduce(limits, &mut self.retired);
+            }
+            if self.pressure_level >= 2 {
+                self.resampling.disable(true, &mut self.retired);
+            }
+            self.notice = Some(tr!("memory-reduced"));
+            self.live_dirty = true;
+            self.release_at = Some(Instant::now() + Duration::from_millis(500));
+            if std::env::var_os("NAGAME_PROFILE").is_some() {
+                eprintln!("memory pressure: level {}", self.pressure_level);
+            }
+            cx.notify();
+        } else if self.pressure_level > 0 && !memory::under_pressure() {
+            self.pressure_level = 0;
+            if let Some(player) = &mut self.player {
+                player.relax();
+            }
+            self.refresh_budget();
+            cx.notify();
+        }
+    }
+
+    fn animation_limits(&self) -> animation::Limits {
+        animation::Limits {
+            frame: self.budget.still,
+            resident: self.budget.resident,
+            ahead: self.budget.ahead,
+        }
+    }
+
+    /// GPU画像の退役時に除外する、まだ描画に使う画像。
+    fn live_ids(&self) -> std::collections::HashSet<ImageId> {
+        self.live_images().map(|(id, _)| id).collect()
     }
 
     fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -333,6 +454,7 @@ impl Viewer {
 
     fn tick(&mut self, cx: &mut Context<Self>) {
         if self.resampling.tick(&mut self.retired) {
+            self.live_dirty = true;
             cx.notify();
         }
         while let Ok(response) = self.responses.try_recv() {
@@ -346,10 +468,24 @@ impl Viewer {
                     self.pages = decoded.pages;
                     self.clear_image();
                     self.image = Some(decoded.image.clone());
+                    let now = Instant::now();
+                    self.player = decoded.animation.as_ref().map(|a| match &a.motion {
+                        pipeline::Motion::Clip(clip) => {
+                            animation::Player::from_clip(clip.clone(), a.path.clone(), a.turns, now)
+                        }
+                        pipeline::Motion::Stream(stream) => animation::Player::from_stream(
+                            stream.clone(),
+                            a.path.clone(),
+                            a.turns,
+                            now,
+                        ),
+                    });
                     if std::env::var_os("NAGAME_PROFILE").is_some() {
                         eprintln!(
-                            "load {} ms cached={} complete={}",
-                            response.elapsed_ms, response.cached, response.complete
+                            "load {} ms cached={} animation={}",
+                            response.elapsed_ms,
+                            response.cached,
+                            self.player.is_some()
                         );
                     }
                     self.next_slide = Instant::now()
@@ -361,6 +497,44 @@ impl Viewer {
                 }
             }
             cx.notify();
+        }
+        if let Some(player) = &mut self.player {
+            let complete = player.clip().is_some();
+            if player.tick(Instant::now(), &mut self.retired) {
+                cx.notify();
+            }
+            if let Some(error) = player.take_error() {
+                self.error = Some(error);
+                cx.notify();
+            }
+            if player.take_chunks_changed() || complete != player.clip().is_some() {
+                self.live_dirty = true;
+            }
+        }
+        self.respond_to_pressure(cx);
+        if self.live_dirty {
+            self.publish_live();
+            if std::env::var_os("NAGAME_PROFILE").is_some() {
+                eprintln!(
+                    "memory: held {} MiB, budget {} MiB, animation {}",
+                    self.ledger.held() / memory::MIB,
+                    self.budget.total / memory::MIB,
+                    match &self.player {
+                        Some(p) if p.streaming() => "streaming",
+                        Some(p) if p.clip().is_some() => "resident",
+                        Some(_) => "decoding",
+                        None => "none",
+                    }
+                );
+            }
+        } else if self.budget_at.elapsed() >= Duration::from_secs(1) {
+            self.refresh_budget();
+        }
+        if self.release_at.is_some_and(|at| Instant::now() >= at) {
+            self.release_at = None;
+            cx.background_executor()
+                .spawn(async { memory::release_free_memory() })
+                .detach();
         }
         if self.slide
             && !self.loading
@@ -838,6 +1012,8 @@ impl Viewer {
         let album = self.album.clone();
         let sorting = settings.clone();
         i18n::activate(settings.language);
+        memory::set_limit_mib(settings.memory_limit_mib);
+        self.live_dirty = true;
         self.settings = settings;
         self.settings_draft = None;
         self.settings_error = None;
@@ -873,35 +1049,6 @@ impl Viewer {
 
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.retired.is_empty() {
-            // Rendering can run several times before GPUI submits its atlas uploads.
-            // Removing a texture here invalidates those queued uploads. Keep it
-            // through presentation and one additional frame so Blade has also
-            // synchronized the previous GPU submission before releasing it.
-            let retired = std::mem::take(&mut self.retired);
-            let viewer = cx.weak_entity();
-            window.on_next_frame(move |window, _| {
-                window.refresh();
-                window.on_next_frame(move |window, cx| {
-                    let current = viewer.upgrade().map(|viewer| {
-                        let viewer = viewer.read(cx);
-                        (
-                            viewer.image.as_ref().map(|image| image.id),
-                            viewer.resampling.ready_id(),
-                        )
-                    });
-                    for image in retired {
-                        // The decoded-image cache may have selected this same
-                        // image again before cleanup. Its atlas entry is live.
-                        if !current.is_some_and(|(source, scaled)| {
-                            source == Some(image.id) || scaled == Some(image.id)
-                        }) {
-                            let _ = window.drop_image(image);
-                        }
-                    }
-                });
-            });
-        }
         let area = Self::area(window);
         self.view.clamp(self.dimensions, area);
         let scale = self.view.scale(self.dimensions, area);
@@ -915,10 +1062,78 @@ impl Render for Viewer {
         } else {
             self.settings.enlarge_algorithm
         };
-        let display_image = self.image.clone().map(|image| {
-            self.resampling
-                .prepare(image, target, algorithm, &mut self.retired)
-        });
+        // The frame to draw: an image and its frame index (animations use chunked images).
+        let display_image = if let Some(player) = &self.player {
+            let (index, chunk, frame) = player.current();
+            let scaled = match player.clip() {
+                Some(clip) if self.pressure_level < 2 => self.resampling.prepare(
+                    &clip.images,
+                    target,
+                    algorithm,
+                    self.budget.resample,
+                    &mut self.retired,
+                ),
+                // Frames of a streaming animation are dropped after playing: use GPU scaling.
+                _ => {
+                    self.resampling.disable(
+                        algorithm != resample::Algorithm::Gpu
+                            && (player.streaming() || self.pressure_level >= 2),
+                        &mut self.retired,
+                    );
+                    None
+                }
+            };
+            Some((
+                scaled.map_or_else(|| chunk.clone(), |images| images[index].clone()),
+                Some(frame),
+            ))
+        } else if let Some(image) = &self.image {
+            let scaled = if self.pressure_level < 2 {
+                self.resampling.prepare(
+                    std::slice::from_ref(image),
+                    target,
+                    algorithm,
+                    self.budget.resample,
+                    &mut self.retired,
+                )
+            } else {
+                self.resampling
+                    .disable(algorithm != resample::Algorithm::Gpu, &mut self.retired);
+                None
+            };
+            Some((
+                scaled.map_or_else(|| image.clone(), |images| images[0].clone()),
+                None,
+            ))
+        } else {
+            None
+        };
+        // Retire after preparing the frame: prepare/disable may have retired images too.
+        if !self.retired.is_empty() {
+            // Rendering can run several times before GPUI submits its atlas uploads.
+            // Removing a texture here invalidates those queued uploads. Keep it
+            // through presentation and one additional frame so Blade has also
+            // synchronized the previous GPU submission before releasing it.
+            let retired = std::mem::take(&mut self.retired);
+            let viewer = cx.weak_entity();
+            window.on_next_frame(move |window, _| {
+                window.refresh();
+                window.on_next_frame(move |window, cx| {
+                    let mut live = viewer
+                        .upgrade()
+                        .map(|viewer| viewer.read(cx).live_ids())
+                        .unwrap_or_default();
+                    for image in retired {
+                        // The decoded-image cache may have selected this same
+                        // image again before cleanup. Its atlas entry is live.
+                        // Inserting also skips duplicates (a chunk is also the first image).
+                        if live.insert(image.id) {
+                            let _ = window.drop_image(image);
+                        }
+                    }
+                });
+            });
+        }
         let path = self.album.current();
         let filename = path
             .and_then(|p| p.file_name())
@@ -968,21 +1183,38 @@ impl Render for Viewer {
         } else if self.resampling.pending() {
             status.push_str(&tr!("resampling-pending"));
         }
-        let content = if let Some(image) = &display_image {
+        let content = if let Some((image, frame)) = display_image {
             let w = target[0] as f32 / device_scale;
             let h = target[1] as f32 / device_scale;
-            img(image.clone())
-                .id(("photo", self.generation as usize))
+            let left =
+                px((((area[0] - w) / 2. + self.view.pan[0]) * device_scale).round() / device_scale);
+            let top =
+                px((((area[1] - h) / 2. + self.view.pan[1]) * device_scale).round() / device_scale);
+            if let Some(frame) = frame {
+                // GPUI's img would animate every frame of the image on its own.
+                // Nagame's player chooses the frame, so paint it directly.
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        let _ = window.paint_image(bounds, Corners::default(), image, frame, false);
+                    },
+                )
                 .absolute()
-                .left(px((((area[0] - w) / 2. + self.view.pan[0]) * device_scale)
-                    .round()
-                    / device_scale))
-                .top(px((((area[1] - h) / 2. + self.view.pan[1]) * device_scale)
-                    .round()
-                    / device_scale))
+                .left(left)
+                .top(top)
                 .w(px(w))
                 .h(px(h))
                 .into_any_element()
+            } else {
+                img(image)
+                    .id(("photo", self.generation as usize))
+                    .absolute()
+                    .left(left)
+                    .top(top)
+                    .w(px(w))
+                    .h(px(h))
+                    .into_any_element()
+            }
         } else {
             div()
                 .size_full()
@@ -1234,6 +1466,7 @@ impl Render for Viewer {
 }
 
 fn main() {
+    memory::tune_allocator();
     let path = std::env::args_os().nth(1).map(PathBuf::from);
     if path
         .as_deref()

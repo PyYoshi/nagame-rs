@@ -39,6 +39,7 @@ pub enum Field {
     Wheel,
     ShrinkAlgorithm,
     EnlargeAlgorithm,
+    Memory,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Choice {
@@ -47,6 +48,17 @@ enum Choice {
     Sort(SortOrder),
     Color(u32),
     Algorithm(crate::resample::Algorithm),
+    Memory(u32),
+}
+/// 0は自動。1 GiB単位ならGiBで表示する。
+fn memory_label(mib: u32) -> String {
+    if mib == 0 {
+        tr!("memory-auto")
+    } else if mib.is_multiple_of(1024) {
+        format!("{} GiB", mib / 1024)
+    } else {
+        format!("{mib} MiB")
+    }
 }
 impl Choice {
     fn label(self) -> String {
@@ -55,6 +67,7 @@ impl Choice {
             Self::Boundary(v) => v.label(),
             Self::Sort(v) => v.label(),
             Self::Algorithm(v) => v.label(),
+            Self::Memory(v) => memory_label(v),
             Self::Color(v) => match v {
                 0x181a1f => tr!("color-dark"),
                 0 => tr!("color-black"),
@@ -70,6 +83,15 @@ pub(super) struct Selector {
     field: Field,
     highlighted: usize,
     position: Point<Pixels>,
+}
+/// 設定画面の候補。手書きで指定した値も候補に残す。
+fn memory_choices(s: &Settings) -> Vec<u32> {
+    let mut choices = crate::memory::LIMIT_CHOICES.to_vec();
+    if !choices.contains(&s.memory_limit_mib) {
+        choices.push(s.memory_limit_mib);
+        choices.sort_unstable();
+    }
+    choices
 }
 impl Tab {
     fn label(self) -> String {
@@ -105,7 +127,7 @@ impl Tab {
                 EnlargeAlgorithm,
                 Language,
             ],
-            Self::Slideshow => &[Interval, Prefetch, Wheel],
+            Self::Slideshow => &[Interval, Prefetch, Memory, Wheel],
             Self::Keyboard => &[],
         }
     }
@@ -135,6 +157,7 @@ impl Field {
             Wheel => tr!("field-wheel"),
             ShrinkAlgorithm => tr!("field-shrink"),
             EnlargeAlgorithm => tr!("field-enlarge"),
+            Memory => tr!("field-memory"),
         }
     }
     fn choices(self, s: &Settings) -> Vec<Choice> {
@@ -168,6 +191,7 @@ impl Field {
                 }
                 colors.into_iter().map(Choice::Color).collect()
             }
+            Self::Memory => memory_choices(s).into_iter().map(Choice::Memory).collect(),
             _ => vec![],
         }
     }
@@ -179,6 +203,7 @@ impl Field {
             Self::Background => Some(Choice::Color(s.background)),
             Self::ShrinkAlgorithm => Some(Choice::Algorithm(s.shrink_algorithm)),
             Self::EnlargeAlgorithm => Some(Choice::Algorithm(s.enlarge_algorithm)),
+            Self::Memory => Some(Choice::Memory(s.memory_limit_mib)),
             _ => None,
         }
     }
@@ -190,6 +215,7 @@ impl Field {
             (Self::Background, Choice::Color(v)) => s.background = v,
             (Self::ShrinkAlgorithm, Choice::Algorithm(v)) => s.shrink_algorithm = v,
             (Self::EnlargeAlgorithm, Choice::Algorithm(v)) => s.enlarge_algorithm = v,
+            (Self::Memory, Choice::Memory(v)) => s.memory_limit_mib = v,
             _ => {}
         }
     }
@@ -224,6 +250,7 @@ impl Field {
             EnlargeAlgorithm => return s.enlarge_algorithm.label(),
             Sort => return s.sort.label(),
             Skip => return s.skip_count.to_string(),
+            Memory => return memory_label(s.memory_limit_mib),
             Interval => return s.slideshow_seconds.to_string(),
             Background => return format!("#{:06X}", s.background),
             _ => self.checked(s).expect("boolean setting"),
@@ -283,6 +310,15 @@ impl Field {
             }
             Skip => {
                 s.skip_count = (s.skip_count as i64 + i64::from(direction)).clamp(1, 10000) as u32
+            }
+            Memory => {
+                let choices = memory_choices(s);
+                let index = choices
+                    .iter()
+                    .position(|v| *v == s.memory_limit_mib)
+                    .unwrap_or(0) as i32;
+                s.memory_limit_mib =
+                    choices[(index + direction.signum()).rem_euclid(choices.len() as i32) as usize];
             }
             Interval => {
                 s.slideshow_seconds =
@@ -863,5 +899,31 @@ impl Viewer {
                 overlay.child(self.selector_panel(cx))
             })
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // `use super::*` would also import GPUI's `test` macro.
+    use super::{Field, Tab, memory_choices};
+    use crate::{i18n::tr, settings::Settings};
+    #[test]
+    fn memory_limit_choices_cycle_and_keep_hand_written_values() {
+        let mut settings = Settings::default();
+        assert_eq!(Field::Memory.value(&settings), tr!("memory-auto"));
+        Field::Memory.adjust(&mut settings, 1);
+        assert_eq!(settings.memory_limit_mib, 256);
+        assert_eq!(Field::Memory.value(&settings), "256 MiB");
+        Field::Memory.adjust(&mut settings, -1);
+        Field::Memory.adjust(&mut settings, -1);
+        assert_eq!(settings.memory_limit_mib, 8192);
+        assert_eq!(Field::Memory.value(&settings), "8 GiB");
+        settings.memory_limit_mib = 3000;
+        let choices = memory_choices(&settings);
+        assert!(choices.windows(2).all(|w| w[0] < w[1]));
+        assert!(choices.contains(&3000));
+        Field::Memory.adjust(&mut settings, 1);
+        assert_eq!(settings.memory_limit_mib, 4096);
+        assert!(Tab::Slideshow.fields().contains(&Field::Memory));
     }
 }

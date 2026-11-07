@@ -171,6 +171,10 @@ field-interval = Slideshow interval (seconds)
 
 field-prefetch = Prefetch nearby images
 
+field-memory = Image memory limit
+
+memory-auto = Automatic
+
 field-wheel = Wheel zooms (Ctrl to browse)
 
 field-shrink = Downscaling filter
@@ -204,6 +208,8 @@ resampler-stopped = The resampling worker stopped
 path-copied = Path copied
 
 image-copied = Image copied
+
+memory-reduced = Memory is low: reduced the cache and read-ahead
 
 no-open-image = No image is open
 
@@ -263,9 +269,7 @@ image-data-missing = Image data is missing
 
 no-frames = The image has no frames
 
-gif-limit = GIF exceeds the decoded size limit (128 MiB / 1,000 frames)
-
-image-limit = Decoded image exceeds 128 MiB
+image-limit = Decoded image exceeds the limit ({ $limit } MiB)
 
 heif-limit = HEIF image exceeds the decoded size limit
 

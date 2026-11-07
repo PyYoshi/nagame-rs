@@ -97,7 +97,8 @@ pub struct ImageInformation<'a> {
     pub bytes: u64,
     pub original: [u32; 2],
     pub displayed: [f32; 2],
-    pub frames: usize,
+    /// Noneはアニメーションの1周目をデコード中で、まだ数が分からない。
+    pub frames: Option<usize>,
     pub pages: usize,
 }
 
@@ -169,7 +170,9 @@ pub fn image_information(info: ImageInformation<'_>) -> String {
         original_height = info.original[1],
         width = info.displayed[0],
         height = info.displayed[1],
-        frames = info.frames,
+        frames = info
+            .frames
+            .map_or_else(|| "…".to_owned(), |n| n.to_string()),
         pages = info.pages
     )
 }
@@ -252,6 +255,7 @@ mod tests {
                 "page_range",
                 "percent",
                 "filename",
+                "limit",
             ] {
                 args.set(key, "test {literal}");
             }
@@ -354,7 +358,7 @@ mod tests {
             bytes: 1024,
             original: [400, 600],
             displayed: [800., 600.],
-            frames: 1,
+            frames: Some(1),
             pages: 2,
         }));
         assert!(message.contains(&path.display().to_string()));
