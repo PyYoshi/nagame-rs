@@ -331,10 +331,16 @@ clipboard-copy-error = 画像コピーに失敗しました: { $error }
 
 saved-image = 保存しました: { $path }
 
+# 情報画面のファイルサイズ。sizeは単位付きの概数（12.3 MBなど）、bytesは区切り付きの正確な値。
+info-file-size = { $size }（{ $bytes } バイト）
+# 1000バイト未満のファイルサイズ。bytesは表示用の文字列。countは複数形の選択用の数値で、日本語では使わない。
+info-file-size-bytes = { $bytes } バイト
+
+# 情報画面の数値（寸法・フレーム数など）は区切り付きの文字列で渡すため、複数形の選択には使えない。
 image-information = ファイル: { $path }
 
     形式: { $format }
-    ファイルサイズ: { $bytes } bytes
+    ファイルサイズ: { $file_size }
     元の画像: { $original_width } × { $original_height }
     表示画像: { $width } × { $height }
     フレーム数: { $frames }
@@ -369,10 +375,11 @@ pdf-crashed = PDFの描画処理が異常終了しました
 pdf-timeout = PDFのページの描画が時間内に終わりませんでした
 pdf-io = PDFファイルを読み込めません
 
+# 情報画面の数値（ページ番号・寸法など）は区切り付きの文字列で渡すため、複数形の選択には使えない。
 pdf-information = ファイル: { $path }
 
     形式: PDF
-    ファイルサイズ: { $bytes } bytes
+    ファイルサイズ: { $file_size }
     ページ: { $page } / { $total }
     ページの寸法: { $page_width } × { $page_height } mm
     表示画像: { $width } × { $height }（{ $dpi } DPI）

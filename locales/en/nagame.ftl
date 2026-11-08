@@ -335,10 +335,19 @@ clipboard-copy-error = Image copy failed: { $error }
 
 saved-image = Saved: { $path }
 
+# File size on the information screen. size is approximate with a unit (such as 12.3 MB); bytes is exact and grouped.
+info-file-size = { $size } ({ $bytes } bytes)
+# File size under 1000 bytes. bytes is display text; count is the raw number, used only to select the plural.
+info-file-size-bytes = { $count ->
+        [one] { $bytes } byte
+       *[other] { $bytes } bytes
+    }
+
+# Numbers on the information screen (sizes, frame counts) arrive as grouped strings, so they cannot select plurals.
 image-information = File: { $path }
 
     Format: { $format }
-    File size: { $bytes } bytes
+    File size: { $file_size }
     Original image: { $original_width } × { $original_height }
     Displayed image: { $width } × { $height }
     Frames: { $frames }
@@ -371,10 +380,11 @@ pdf-crashed = The PDF renderer stopped unexpectedly
 pdf-timeout = The PDF page did not finish rendering in time
 pdf-io = The PDF file could not be read
 
+# Numbers on the information screen (page numbers, sizes) arrive as grouped strings, so they cannot select plurals.
 pdf-information = File: { $path }
 
     Format: PDF
-    File size: { $bytes } bytes
+    File size: { $file_size }
     Page: { $page } / { $total }
     Page size: { $page_width } × { $page_height } mm
     Displayed image: { $width } × { $height } ({ $dpi } DPI)

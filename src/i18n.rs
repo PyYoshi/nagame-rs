@@ -124,17 +124,78 @@ pub fn pdf_information(info: PdfInformation<'_>) -> String {
     tr!(
         "pdf-information",
         path = info.path.display().to_string(),
-        bytes = info.bytes,
-        page = info.page,
-        total = info.total,
+        file_size = file_size(info.bytes),
+        page = grouped(info.page as u64),
+        total = grouped(info.total as u64),
         page_width = millimeters(info.size[0]),
         page_height = millimeters(info.size[1]),
-        width = info.displayed[0],
-        height = info.displayed[1],
+        width = pixels(info.displayed[0]),
+        height = pixels(info.displayed[1]),
         dpi = format!("{:.0}", info.dpi),
         kind = if info.vector { "vector" } else { "image" },
         pages = info.pages
     )
+}
+
+/// 情報画面の整数。5桁以上は3桁ごとにカンマで区切る（日本語・英語とも）。4桁以下は区切らず、
+/// 1920 × 1080 のような寸法を見慣れた形に保つ。
+fn grouped(value: u64) -> String {
+    let digits = value.to_string();
+    if digits.len() < 5 {
+        return digits;
+    }
+    let mut text = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
+}
+
+/// 表示寸法（画素数）。浮動小数の寸法を整数へ丸めて区切る。
+fn pixels(value: f32) -> String {
+    grouped(value.round().max(0.) as u64)
+}
+
+/// 単位付きの概数と、区切り付きの正確なバイト数。1 KB未満はバイト数だけ。
+fn file_size(bytes: u64) -> String {
+    if bytes < 1000 {
+        tr!(
+            "info-file-size-bytes",
+            count = bytes,
+            bytes = grouped(bytes)
+        )
+    } else {
+        tr!(
+            "info-file-size",
+            size = approximate_size(bytes),
+            bytes = grouped(bytes)
+        )
+    }
+}
+
+/// 1 KB以上の大きさの概数。単位は1000倍ごと（1 MB = 1,000,000バイト。macOSやGNOMEの
+/// ファイル表示と同じ）で、100未満は小数1桁にする。浮動小数の誤差で丸めの向きが変わらない
+/// よう、整数で四捨五入する。EBまであればu64のすべての値を1000未満で表せる。
+fn approximate_size(bytes: u64) -> String {
+    const UNITS: [&str; 6] = ["KB", "MB", "GB", "TB", "PB", "EB"];
+    let bytes = u128::from(bytes);
+    let rounded = |divisor: u128, scale: u128| (bytes * scale + divisor / 2) / divisor;
+    let mut unit = 0;
+    let mut divisor = 1000;
+    // 四捨五入すると1000になる値も次の単位で表す（1000 KBではなく1.0 MB）。
+    while rounded(divisor, 1) >= 1000 && unit + 1 < UNITS.len() {
+        divisor *= 1000;
+        unit += 1;
+    }
+    let tenths = rounded(divisor, 10);
+    if tenths < 1000 {
+        format!("{}.{} {}", tenths / 10, tenths % 10, UNITS[unit])
+    } else {
+        format!("{} {}", rounded(divisor, 1), UNITS[unit])
+    }
 }
 
 /// ステータスバーに出す、表示中の画像の状態。
@@ -201,14 +262,14 @@ pub fn image_information(info: ImageInformation<'_>) -> String {
         "image-information",
         path = info.path.display().to_string(),
         format = info.format,
-        bytes = info.bytes,
-        original_width = info.original[0],
-        original_height = info.original[1],
-        width = info.displayed[0],
-        height = info.displayed[1],
+        file_size = file_size(info.bytes),
+        original_width = grouped(u64::from(info.original[0])),
+        original_height = grouped(u64::from(info.original[1])),
+        width = pixels(info.displayed[0]),
+        height = pixels(info.displayed[1]),
         frames = info
             .frames
-            .map_or_else(|| "…".to_owned(), |n| n.to_string()),
+            .map_or_else(|| "…".to_owned(), |n| grouped(n as u64)),
         pages = info.pages
     )
 }
@@ -240,9 +301,68 @@ mod tests {
         text.replace(['\u{2068}', '\u{2069}'], "")
     }
 
+    /// メッセージ（値と属性）が参照する変数名。
+    fn variables<'a>(
+        message: &fluent_syntax::ast::Message<&'a str>,
+    ) -> std::collections::BTreeSet<&'a str> {
+        use fluent_syntax::ast::{
+            CallArguments, Expression, InlineExpression, Pattern, PatternElement,
+        };
+        type Names<'a> = std::collections::BTreeSet<&'a str>;
+        fn pattern<'a>(pattern: &Pattern<&'a str>, names: &mut Names<'a>) {
+            for element in &pattern.elements {
+                if let PatternElement::Placeable { expression } = element {
+                    walk(expression, names);
+                }
+            }
+        }
+        fn walk<'a>(expression: &Expression<&'a str>, names: &mut Names<'a>) {
+            match expression {
+                Expression::Select { selector, variants } => {
+                    inline(selector, names);
+                    for variant in variants {
+                        pattern(&variant.value, names);
+                    }
+                }
+                Expression::Inline(expression) => inline(expression, names),
+            }
+        }
+        fn inline<'a>(expression: &InlineExpression<&'a str>, names: &mut Names<'a>) {
+            match expression {
+                InlineExpression::VariableReference { id } => {
+                    names.insert(id.name);
+                }
+                InlineExpression::Placeable { expression } => walk(expression, names),
+                InlineExpression::FunctionReference { arguments, .. }
+                | InlineExpression::TermReference {
+                    arguments: Some(arguments),
+                    ..
+                } => call(arguments, names),
+                _ => {}
+            }
+        }
+        fn call<'a>(arguments: &CallArguments<&'a str>, names: &mut Names<'a>) {
+            for argument in &arguments.positional {
+                inline(argument, names);
+            }
+            for argument in &arguments.named {
+                inline(&argument.value, names);
+            }
+        }
+        let mut names = Names::new();
+        if let Some(value) = &message.value {
+            pattern(value, &mut names);
+        }
+        for attribute in &message.attributes {
+            pattern(&attribute.value, &mut names);
+        }
+        names
+    }
+
     #[test]
     fn catalogs_have_matching_keys_and_format_every_message() {
         let mut baseline_ids = None;
+        let mut catalog_variables = std::collections::BTreeMap::new();
         for (language, source) in [
             ("ja", include_str!("../locales/ja/nagame.ftl")),
             ("en", include_str!("../locales/en/nagame.ftl")),
@@ -266,6 +386,17 @@ mod tests {
             } else {
                 baseline_ids = Some(ids);
             }
+            let names: std::collections::BTreeMap<_, _> = syntax
+                .body
+                .iter()
+                .filter_map(|entry| match entry {
+                    fluent_syntax::ast::Entry::Message(message) => {
+                        Some((message.id.name, variables(message)))
+                    }
+                    _ => None,
+                })
+                .collect();
+            catalog_variables.insert(language, names);
             let mut bundle = FluentBundle::new(vec![language.parse().unwrap()]);
             bundle.add_resource(resource).expect("unique message IDs");
             let mut args = FluentArgs::new();
@@ -296,6 +427,8 @@ mod tests {
                 "page_width",
                 "page_height",
                 "dpi",
+                "size",
+                "file_size",
             ] {
                 args.set(key, "test {literal}");
             }
@@ -346,6 +479,17 @@ mod tests {
                 }
             }
         }
+        // fl!がコンパイル時に照合するのは英語の文言の引数だけ。日本語に古い変数名が残ると、
+        // 実行時に `{$name}` がそのまま表示される。日本語は英語の変数の一部だけを使ってよい
+        // （英語の複数形の選択にだけ使う変数があるため）。
+        let english = &catalog_variables["en"];
+        for (id, names) in &catalog_variables["ja"] {
+            assert!(
+                names.is_subset(&english[id]),
+                "{id}: ja uses {names:?}, en passes {:?}",
+                english[id]
+            );
+        }
     }
 
     #[test]
@@ -363,6 +507,13 @@ mod tests {
             ))
             .contains("2 items")
         );
+        let byte = without_isolates(&i18n_embed_fl::fl!(
+            english,
+            "info-file-size-bytes",
+            count = 1,
+            bytes = "1"
+        ));
+        assert_eq!(byte, "1 byte");
         let unsupported: i18n_embed::unic_langid::LanguageIdentifier = "fr".parse().unwrap();
         let fallback = english.select_languages(&[unsupported]);
         assert_eq!(fallback.get("open-image"), "Open image");
@@ -376,6 +527,47 @@ mod tests {
                 });
             }
         });
+    }
+
+    #[test]
+    fn information_numbers_are_grouped_and_sizes_have_units() {
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(9999), "9999");
+        assert_eq!(grouped(10_000), "10,000");
+        assert_eq!(grouped(12_345_678), "12,345,678");
+        assert_eq!(grouped(u64::MAX), "18,446,744,073,709,551,615");
+        assert_eq!(pixels(1919.6), "1920");
+        assert_eq!(pixels(16384.), "16,384");
+        assert_eq!(approximate_size(1000), "1.0 KB");
+        assert_eq!(approximate_size(1500), "1.5 KB");
+        // ちょうど半分は切り上げる（浮動小数では2.0 KBになっていた）。
+        assert_eq!(approximate_size(1050), "1.1 KB");
+        assert_eq!(approximate_size(2050), "2.1 KB");
+        assert_eq!(approximate_size(98_765), "98.8 KB");
+        assert_eq!(approximate_size(99_949), "99.9 KB");
+        // 小数1桁で100.0になる値から、整数で表す。
+        assert_eq!(approximate_size(99_950), "100 KB");
+        assert_eq!(approximate_size(100_000), "100 KB");
+        assert_eq!(approximate_size(999_499), "999 KB");
+        // 四捨五入すると1000 KBになる大きさは、次の単位で表す。
+        assert_eq!(approximate_size(999_500), "1.0 MB");
+        assert_eq!(approximate_size(999_999), "1.0 MB");
+        assert_eq!(approximate_size(12_345_678), "12.3 MB");
+        assert_eq!(approximate_size(5_000_000_000), "5.0 GB");
+        assert_eq!(approximate_size(999_999_999_999_999), "1.0 PB");
+        assert_eq!(approximate_size(u64::MAX), "18.4 EB");
+        let large = without_isolates(&file_size(12_345_678));
+        assert!(
+            large.contains("12.3 MB") && large.contains("12,345,678"),
+            "{large}"
+        );
+        let small = without_isolates(&file_size(999));
+        assert!(small.contains("999") && !small.contains("KB"), "{small}");
+        let kilobyte = without_isolates(&file_size(1000));
+        assert!(
+            kilobyte.contains("1.0 KB") && kilobyte.contains("1000"),
+            "{kilobyte}"
+        );
     }
 
     #[test]
@@ -409,6 +601,7 @@ mod tests {
         assert!(message.contains(&path.display().to_string()));
         assert!(message.contains("400 × 600"));
         assert!(message.contains("800 × 600"));
+        assert!(message.contains("1.0 KB") && message.contains("1024"));
         let detail = "a {filename} cannot be opened";
         assert!(without_isolates(&error_status(detail)).ends_with(detail));
     }
