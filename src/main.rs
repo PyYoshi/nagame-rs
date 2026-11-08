@@ -29,13 +29,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// ツールバーの高さ（論理ピクセル）。
-const BAR: f32 = 48.;
 /// ステータスバーの高さ（論理ピクセル）。
 const FOOTER: f32 = 30.;
 
 /// メニュー・キー・ボタンから実行する操作。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Command {
     Open,
     Menu(menu_ui::Menu),
@@ -200,7 +198,7 @@ impl Viewer {
             force_reload: false,
             boundary: None,
             active_menu: None,
-            menu_anchor: [0., menu_ui::HEIGHT],
+            menu_anchor: menu_ui::Menu::File.anchor(),
             menu_selected: 0,
             info_visible: false,
             info_text: None,
@@ -263,7 +261,7 @@ impl Viewer {
         let size = window.viewport_size();
         [
             f32::from(size.width).max(1.),
-            (f32::from(size.height) - menu_ui::HEIGHT - BAR - FOOTER).max(1.),
+            (f32::from(size.height) - menu_ui::HEIGHT - FOOTER).max(1.),
         ]
     }
 
@@ -625,15 +623,7 @@ impl Viewer {
                     Some(menu)
                 };
                 self.menu_selected = 0;
-                self.menu_anchor = [
-                    match menu {
-                        menu_ui::Menu::File => 0.,
-                        menu_ui::Menu::List => 82.,
-                        menu_ui::Menu::View => 164.,
-                        menu_ui::Menu::Other => 246.,
-                    },
-                    menu_ui::HEIGHT,
-                ];
+                self.menu_anchor = menu.anchor();
             }
             Command::OpenFolder => self.prompt_folder(cx),
             Command::SaveAs => self.save_as(cx),
@@ -1305,7 +1295,10 @@ impl Render for Viewer {
                         tr!("empty-folder")
                     }
                 }))
-                .child(tr!("empty-hint"))
+                .child(match self.command_key(Command::Open) {
+                    Some(key) => tr!("empty-hint-key", key = key),
+                    None => tr!("empty-hint"),
+                })
                 .child(tr!("key-hint"))
                 .into_any_element()
         };
@@ -1332,56 +1325,6 @@ impl Render for Viewer {
             .child(self.menu_bar(cx))
             .child(
                 div()
-                    .id("toolbar")
-                    .h(px(BAR))
-                    .flex_none()
-                    .flex()
-                    .overflow_x_scroll()
-                    .items_center()
-                    .px_2()
-                    .gap_1()
-                    .bg(rgb(0x25282f))
-                    .child(self.button(tr!("open"), Command::Open, cx))
-                    .child(self.button(tr!("settings"), Command::Settings, cx))
-                    .child(self.button(tr!("parent"), Command::Parent, cx))
-                    .child(self.button(tr!("previous-folder-short"), Command::PreviousFolder, cx))
-                    .child(self.button(tr!("next-folder-short"), Command::NextFolder, cx))
-                    .child(self.button(
-                        "〈",
-                        if self.reversed_manga_controls() {
-                            Command::Next
-                        } else {
-                            Command::Previous
-                        },
-                        cx,
-                    ))
-                    .child(self.button(
-                        "〉",
-                        if self.reversed_manga_controls() {
-                            Command::Previous
-                        } else {
-                            Command::Next
-                        },
-                        cx,
-                    ))
-                    .child(self.button("−", Command::ZoomOut, cx))
-                    .child(self.button("＋", Command::ZoomIn, cx))
-                    .child(self.button(tr!("fit"), Command::Fit, cx))
-                    .child(self.button("100%", Command::Actual, cx))
-                    .child(self.button(tr!("rotate-right"), Command::Rotate, cx))
-                    .child(self.button(tr!("fullscreen"), Command::Fullscreen, cx))
-                    .child(self.button(
-                        if self.slide {
-                            tr!("stop")
-                        } else {
-                            tr!("slideshow-short")
-                        },
-                        Command::Slide,
-                        cx,
-                    )),
-            )
-            .child(
-                div()
                     .id("viewport")
                     .relative()
                     .w_full()
@@ -1399,20 +1342,12 @@ impl Render for Viewer {
                     )
                     .on_mouse_down(
                         MouseButton::Right,
-                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
                             if this.settings_draft.is_none() && !this.info_visible {
-                                this.active_menu = Some(menu_ui::Menu::View);
-                                this.menu_selected = 0;
-                                this.menu_anchor = [
-                                    f32::from(event.position.x).clamp(
-                                        0.,
-                                        (f32::from(window.viewport_size().width) - 300.).max(0.),
-                                    ),
-                                    f32::from(event.position.y).min(
-                                        (f32::from(window.viewport_size().height) - 350.)
-                                            .max(menu_ui::HEIGHT),
-                                    ),
-                                ];
+                                this.open_context_menu([
+                                    f32::from(event.position.x),
+                                    f32::from(event.position.y),
+                                ]);
                                 cx.notify();
                             }
                         }),

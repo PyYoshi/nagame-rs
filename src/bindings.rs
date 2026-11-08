@@ -2,7 +2,7 @@
 
 use crate::i18n::tr;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::LazyLock};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Shortcut {
@@ -99,9 +99,10 @@ impl Shortcut {
         }
     }
 }
-pub fn defaults() -> BTreeMap<String, Shortcut> {
+/// 初期キー。同じ操作に複数のキーがある場合は、メニューに表示するキーを先に置く。
+pub const DEFAULTS: &[(&str, Shortcut)] = {
     use Shortcut::*;
-    [
+    &[
         ("ctrl-o", Open),
         ("cmd-o", Open),
         ("ctrl-shift-o", OpenFolder),
@@ -123,13 +124,13 @@ pub fn defaults() -> BTreeMap<String, Shortcut> {
         ("shift-+", ZoomIn),
         ("shift-=", ZoomIn),
         ("-", ZoomOut),
-        ("0", Fit),
         ("f", Fit),
+        ("0", Fit),
         ("1", Actual),
         ("r", Rotate),
         ("f11", Fullscreen),
-        ("a", Slide),
         ("s", Slide),
+        ("a", Slide),
         ("m", Manga),
         ("ctrl-,", Settings),
         ("cmd-,", Settings),
@@ -141,7 +142,15 @@ pub fn defaults() -> BTreeMap<String, Shortcut> {
         ("cmd-c", CopyImage),
         ("ctrl-shift-c", CopyPath),
     ]
-    .into_iter()
-    .map(|(key, action)| (gpui::Keystroke::parse(key).unwrap().unparse(), action))
-    .collect()
+};
+/// `DEFAULTS` のキーを、設定に保存する形（`Keystroke::unparse`。Linuxでは `cmd` が `super`）へ
+/// そろえたもの。並びは `DEFAULTS` と同じ。
+pub static DEFAULT_KEYS: LazyLock<Vec<(String, Shortcut)>> = LazyLock::new(|| {
+    DEFAULTS
+        .iter()
+        .map(|(key, action)| (gpui::Keystroke::parse(key).unwrap().unparse(), *action))
+        .collect()
+});
+pub fn defaults() -> BTreeMap<String, Shortcut> {
+    DEFAULT_KEYS.iter().cloned().collect()
 }

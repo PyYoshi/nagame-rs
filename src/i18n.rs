@@ -429,6 +429,7 @@ mod tests {
                 "dpi",
                 "size",
                 "file_size",
+                "key",
             ] {
                 args.set(key, "test {literal}");
             }

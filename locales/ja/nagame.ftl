@@ -2,11 +2,11 @@
 
 menu-file = ファイル
 
-menu-list = リスト
+menu-navigate = 移動
+
+menu-sort = 並び順
 
 menu-view = 表示
-
-menu-other = その他
 
 open-image-menu = 画像を開く…
 
@@ -29,8 +29,6 @@ copy-image = 画像をコピー
 copy-file-path = ファイルのパスをコピー
 
 copy-path = パスをコピー
-
-reveal-folder = フォルダをファイラーで開く
 
 reveal-image-folder = 画像のあるフォルダを開く
 
@@ -84,7 +82,7 @@ fullscreen = 全画面
 
 manga = 漫画モード
 
-reading-direction = 漫画の読む方向を切り替え
+right-to-left = 右から左に読む
 
 slideshow = 自動スライド
 
@@ -226,21 +224,10 @@ empty-folder = このフォルダに画像はありません
 
 empty-hint = 画像を開く、またはここにドロップ
 
+# keyは「画像を開く」に割り当てたキー（Ctrl+Oなど）。
+empty-hint-key = { $key } で画像を開くか、ここにドロップ
+
 key-hint = ← → 画像送り    + − ズーム    F フィット    1 原寸    R 回転
-
-open = 開く
-
-parent = 親
-
-previous-folder-short = 前フォルダ
-
-next-folder-short = 次フォルダ
-
-fit = フィット
-
-stop = 停止
-
-slideshow-short = 自動送り
 
 last-image-prompt = 最後の画像です。次の操作を選択してください
 

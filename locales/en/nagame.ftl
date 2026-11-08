@@ -3,11 +3,11 @@
 
 menu-file = File
 
-menu-list = Browse
+menu-navigate = Go
+
+menu-sort = Sort
 
 menu-view = View
-
-menu-other = Tools
 
 open-image-menu = Open image…
 
@@ -30,8 +30,6 @@ copy-image = Copy image
 copy-file-path = Copy file path
 
 copy-path = Copy path
-
-reveal-folder = Open containing folder
 
 reveal-image-folder = Open image folder
 
@@ -85,7 +83,7 @@ fullscreen = Fullscreen
 
 manga = Manga mode
 
-reading-direction = Toggle reading direction
+right-to-left = Read right to left
 
 slideshow = Slideshow
 
@@ -227,21 +225,10 @@ empty-folder = No images in this folder
 
 empty-hint = Open an image or drop it here
 
+# key is the key assigned to opening an image (such as Ctrl+O).
+empty-hint-key = Press { $key } to open an image, or drop it here
+
 key-hint = ← → Browse    + − Zoom    F Fit    1 Actual size    R Rotate
-
-open = Open
-
-parent = Parent
-
-previous-folder-short = Prev folder
-
-next-folder-short = Next folder
-
-fit = Fit
-
-stop = Stop
-
-slideshow-short = Slideshow
 
 last-image-prompt = Last image. Choose what to do next.
 

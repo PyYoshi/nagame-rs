@@ -877,10 +877,39 @@ pub fn start(handle: WindowHandle<Viewer>, cx: &mut App) {
         key(handle, cx, "escape");
         key(handle, cx, "f10");
         handle
-            .read_with(cx, |v, _| assert!(v.active_menu.is_some()))
+            .read_with(cx, |v, _| {
+                assert_eq!(v.active_menu, Some(crate::menu_ui::Menu::File))
+            })
             .unwrap();
-        key(handle, cx, "right");
+        // ←で末尾の「表示」へ回り、→で「ファイル」「移動」を経て「並び順」へ移る。
+        key(handle, cx, "left");
+        handle
+            .read_with(cx, |v, _| {
+                assert_eq!(v.active_menu, Some(crate::menu_ui::Menu::View))
+            })
+            .unwrap();
+        for _ in 0..3 {
+            key(handle, cx, "right");
+        }
+        // 並び順のメニューで、上下キーは区切り線を飛ばして「逆順」へ移り、上端から下端へ回る。
+        for _ in 0..5 {
+            key(handle, cx, "down");
+        }
+        handle
+            .read_with(cx, |v, _| {
+                assert_eq!(v.active_menu, Some(crate::menu_ui::Menu::Sort));
+                assert_eq!(v.menu_selected, 6);
+            })
+            .unwrap();
+        key(handle, cx, "down");
+        key(handle, cx, "up");
+        handle
+            .read_with(cx, |v, _| assert_eq!(v.menu_selected, 6))
+            .unwrap();
         key(handle, cx, "escape");
+        handle
+            .read_with(cx, |v, _| assert!(v.active_menu.is_none()))
+            .unwrap();
         key(handle, cx, "ctrl-,");
         key(handle, cx, "4");
         for _ in 0..Shortcut::ALL

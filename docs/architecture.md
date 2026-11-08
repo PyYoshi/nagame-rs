@@ -21,7 +21,7 @@
 | [window_state.rs](../src/window_state.rs) | `WindowState`, `restore_position` | 通常サイズ・位置・最大化の保存、画面変更時の補正、X11の位置復元 |
 | [settings_ui.rs](../src/settings_ui.rs) | `Tab`, `Field`, `Selector` | 設定の下書き編集、候補一覧、キー割り当ての入力 |
 | [bindings.rs](../src/bindings.rs) | `Shortcut`, `defaults` | 割り当て可能な操作と初期キー |
-| [menu_ui.rs](../src/menu_ui.rs) | `Menu` | メニューバー、右クリックメニュー、メニュー内のキー操作 |
+| [menu_ui.rs](../src/menu_ui.rs) | `Menu`, `command_key` | メニューバー（ファイル・移動・並び順・表示）、右クリックメニュー（`Menu::Context`）、区切り線と✓・●の印、割り当てたキーの表示、メニュー内のキー操作 |
 | [scrollbar.rs](../src/scrollbar.rs) | `settings_scrollbar` | 設定一覧のスクロールバーとドラッグ計算 |
 | [viewer_io.rs](../src/viewer_io.rs) | `save_as`, `copy_image`, `show_information` | ファイル選択、書き出し、画像コピー、情報画面 |
 | [ui_smoke.rs](../src/ui_smoke.rs) | `start` | `ui-smoke` feature専用の実ウィンドウ回帰テスト |
@@ -145,7 +145,7 @@ PDFを開くとアルバムはそのページ列になり（`document`、`direct
 
 `Viewport` はフィット、倍率、パンを保持し、`clamp` で画像が画面外へ消えないよう制限する。見開きの前進は `Loaded.pages` 枚単位で進み、後退は `decoder::dimensions` による直前画像の寸法も使う。横長単独設定、読む方向、左右キーの反転を混同しない。
 
-キーボードは `Viewer::key` が設定画面、メニュー、情報画面の順で振り分け、その後に設定済み `Shortcut`、スクロール等を処理する。`shortcut_command` で `Command` へ変換し、ボタンやメニューも `command` へ集約する。
+キーボードは `Viewer::key` が設定画面、メニュー、情報画面の順で振り分け、その後に設定済み `Shortcut`、スクロール等を処理する。`shortcut_command` で `Command` へ変換し、ボタンやメニューも `command` へ集約する。メニューの項目に出すキーは、設定の割り当てを `shortcut_command` で `Command` へ変換して逆引きする（漫画モードで左右を入れ替えた場合も、実際にその操作を行うキーになる）。同じ操作に複数のキーがある場合は `menu_ui::preferred_key` が選ぶ（「次（Space）」は別名として後回し、既定の割り当ては `bindings::DEFAULTS` の並び、利用者が加えたキーは修飾キーの少ない順）。メニューは `anchored` で開き、画面の端では画面内へずらす。ツールバーは持たず、操作の入口はメニューバー・右クリックメニュー・キー・ホイールにする。
 
 ## 設定と外部出力
 
