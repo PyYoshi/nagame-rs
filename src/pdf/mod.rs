@@ -2,8 +2,10 @@
 //! PDFiumは補助プロセス（`nagame --pdf-helper`）だけがロードする。本体はページ数・寸法と、
 //! 描いたBGRAの画素だけを受け取る。設計と選定理由はdocs/pdf-support.mdを参照。
 
+mod fonts;
 mod helper;
 mod ipc;
+mod sandbox;
 #[cfg(any(test, feature = "ui-smoke"))]
 pub mod synthetic;
 
@@ -152,6 +154,9 @@ enum Request {
     Hang,
     #[cfg(test)]
     Abort,
+    /// 補助プロセスの制限が効いているかを確かめる。
+    #[cfg(test)]
+    Probe,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -172,13 +177,15 @@ enum Response {
     },
     Trimmed,
     Failed(Failure),
+    #[cfg(test)]
+    Probe(sandbox::Probe),
 }
 
 /// PDFを開き、ページごとの論理寸法を返す。一覧の解決（バックグラウンド）から呼ぶ。
 pub fn open(path: &Path) -> Result<Vec<[f32; 2]>, Failure> {
     match call(path, Request::Open, Class::Open, || false)? {
         Reply::Opened(pages) => Ok(pages),
-        Reply::Rendered(_) => Err(Failure::Corrupt),
+        _ => Err(Failure::Corrupt),
     }
 }
 
@@ -192,7 +199,7 @@ pub fn render(
 ) -> Result<Rendered, Failure> {
     match call(path, Request::Render { page, mode }, class, cancelled)? {
         Reply::Rendered(rendered) => Ok(rendered),
-        Reply::Opened(_) => Err(Failure::Corrupt),
+        _ => Err(Failure::Corrupt),
     }
 }
 
@@ -222,6 +229,8 @@ pub fn helper_main() -> Option<i32> {
 enum Reply {
     Opened(Vec<[f32; 2]>),
     Rendered(Rendered),
+    #[cfg(test)]
+    Probe(sandbox::Probe),
 }
 
 struct Job {
@@ -567,6 +576,8 @@ fn decode(response: Response, fds: Vec<OwnedFd>, request: &Request) -> Result<Re
             }))
         }
         (Response::Failed(failure), _) => Err(failure),
+        #[cfg(test)]
+        (Response::Probe(probe), Request::Probe) => Ok(Reply::Probe(probe)),
         _ => Err(Failure::Corrupt),
     }
 }
@@ -743,10 +754,10 @@ impl Drop for Helper {
     }
 }
 
-/// テストは仲介スレッドを共有する。先読みの種類は最新の1件に置き換わるため、先読みの種類を
-/// 使うテストはこれで順番に動かす。
+/// テストは仲介スレッドを共有する。先読みと表示解像度の種類は最新の1件に置き換わるため、
+/// これらの種類を使うテストはこれで順番に動かす。
 #[cfg(test)]
-pub static PREFETCH_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub static CLASS_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests;

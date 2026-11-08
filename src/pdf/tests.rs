@@ -348,6 +348,9 @@ fn helpers_report_a_missing_library_and_run_under_the_memory_limit() {
 
 #[test]
 fn timed_out_documents_are_skipped_for_background_requests_until_forgotten() {
+    let _serial = CLASS_TESTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let page = Page {
         size: [100., 100.],
         ..Page::default()
@@ -371,7 +374,7 @@ fn timed_out_documents_are_skipped_for_background_requests_until_forgotten() {
 
 #[test]
 fn abandoned_long_requests_yield_to_waiting_ones_without_a_timeout_strike() {
-    let _serial = PREFETCH_TESTS
+    let _serial = CLASS_TESTS
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let page = Page {
@@ -396,4 +399,70 @@ fn abandoned_long_requests_yield_to_waiting_ones_without_a_timeout_strike() {
     assert_eq!(open(&waiting).unwrap(), vec![[100., 100.]]);
     // 時間切れではなく中断として扱ったので、先読みでもこの文書を試せる。
     assert!(call(&abandoned, Request::Open, Class::Prefetch, || false).is_ok());
+}
+
+#[test]
+fn helpers_cannot_read_outside_fonts_start_processes_or_open_sockets() {
+    let page = Page {
+        size: [100., 100.],
+        ..Page::default()
+    };
+    let path = write("probe.pdf", &pdf(&[page], false));
+    let Ok(Reply::Probe(probe)) = call(&path, Request::Probe, Class::Open, || false) else {
+        panic!("no probe reply");
+    };
+    assert!(probe.report.seccomp, "{probe:?}");
+    assert!(
+        probe.fork_denied && probe.socket_denied && probe.pidfd_denied,
+        "{probe:?}"
+    );
+    // Landlockはカーネルの対応に依存する。使えた場合は、フォント以外を読めないこと。
+    if probe.report.landlock.is_some() {
+        assert!(probe.read_denied, "{probe:?}");
+    }
+    // 制限の後も描ける。
+    assert!(draw(&path, 0, Mode::Base { limit: 1 << 30 }).is_ok());
+}
+
+#[test]
+fn jpeg_scans_render_at_their_embedded_resolution() {
+    let pixels = image::RgbImage::from_fn(300, 400, |x, _| {
+        if x < 150 {
+            image::Rgb([255, 0, 0])
+        } else {
+            image::Rgb([0, 0, 255])
+        }
+    });
+    let mut data = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut data, 95)
+        .encode_image(&pixels)
+        .unwrap();
+    // 72×96 pt（1×1.33インチ）に300×400画素。300 DPIのスキャン。
+    let path = write(
+        "jpeg.pdf",
+        &pdf(
+            &[Page {
+                size: [72., 96.],
+                items: vec![Item::Jpeg {
+                    data,
+                    pixels: [300, 400],
+                    rect: [0., 0., 72., 96.],
+                }],
+                ..Page::default()
+            }],
+            false,
+        ),
+    );
+    let page = draw(&path, 0, Mode::Base { limit: 1 << 30 }).unwrap();
+    assert!(!page.vector);
+    assert_eq!(page.pixels.dimensions(), (300, 400));
+    // JPEGの誤差を許して、左が赤・右が青（BGRA）。
+    let [b, g, r, a] = pixel(&page, 50, 200);
+    assert!(
+        r > 200 && g < 60 && b < 60 && a == 255,
+        "{:?}",
+        [b, g, r, a]
+    );
+    let [b, g, r, _] = pixel(&page, 250, 200);
+    assert!(b > 200 && g < 60 && r < 60, "{:?}", [b, g, r]);
 }

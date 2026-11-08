@@ -29,6 +29,9 @@ x11rb = { version = "0.13", default-features = false }
 [target.'cfg(target_os = "linux")'.dependencies]
 # src/memory.rsのメモリー逼迫の監視（PSIのpoll）と、glibcのアロケーター設定に使う。
 libc = "0.2"
+# PDFの補助プロセスが、埋め込みのないフォントをfontconfigで選ぶ（src/pdf/fonts.rs）。
+# GPUIのフォント処理が既に同じ版をリンクしている。
+yeslogic-fontconfig-sys = "6"
 
 [profile.dev]
 debug = 0

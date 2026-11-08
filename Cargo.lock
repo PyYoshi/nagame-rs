@@ -3521,6 +3521,7 @@ dependencies = [
  "serde",
  "serde_json",
  "x11rb",
+ "yeslogic-fontconfig-sys",
 ]
 
 [[package]]

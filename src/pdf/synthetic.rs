@@ -31,6 +31,13 @@ pub enum Item {
         color: [u8; 3],
         rect: [f32; 4],
     },
+    /// JPEG（DCTDecode）の画像をそのまま長方形へ配置する（スキャンしたPDFと同じ形）。
+    #[cfg_attr(not(test), allow(dead_code))]
+    Jpeg {
+        data: Vec<u8>,
+        pixels: [u32; 2],
+        rect: [f32; 4],
+    },
     /// Helveticaの文字列。invisibleなら描画モード3（OCRの文字層と同じ）。
     Text {
         text: String,
@@ -90,6 +97,26 @@ pub fn pdf(pages: &[Page], encrypted: bool) -> Vec<u8> {
                     )
                     .into_bytes();
                     object.extend_from_slice(&data);
+                    object.extend_from_slice(b"\nendstream");
+                    objects.push(object);
+                    resources += &format!("/Im{index} {image_id} 0 R ");
+                    content += &format!(
+                        "q {} 0 0 {} {} {} cm /Im{index} Do Q\n",
+                        rect[2], rect[3], rect[0], rect[1]
+                    );
+                }
+                Item::Jpeg { data, pixels, rect } => {
+                    let image_id = objects.len() + 1;
+                    let mut object = format!(
+                        "<< /Type /XObject /Subtype /Image /Width {} /Height {} \
+                         /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode \
+                         /Length {} >>\nstream\n",
+                        pixels[0],
+                        pixels[1],
+                        data.len()
+                    )
+                    .into_bytes();
+                    object.extend_from_slice(data);
                     object.extend_from_slice(b"\nendstream");
                     objects.push(object);
                     resources += &format!("/Im{index} {image_id} 0 R ");

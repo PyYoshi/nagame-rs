@@ -113,6 +113,8 @@ PDFiumはBSD-3-Clause／Apache-2.0で、ソースの提供義務はない。Ubun
 
 PDF対応の組み込み後（同日）に、`just dist-test` でPDFの描画テスト（コンテナー内で補助プロセスを起動し、取得済みのPDFiumで合成PDFを描く）を含む単体テストが成功した。`just dist-check-appimage` と `just dist-check-appimage-host` では、同梱した `libpdfium.so` とライセンスの配置、隔離環境（PDFiumなし）とホストのWayland・X11での合成PDFの読み込みを確認した。
 
+段階2（fontconfigによる代替フォント、補助プロセスのLandlock・seccomp）の組み込み後も、`just dist-test`（コンテナー内で制限を掛けた補助プロセスの確認を含む）、`just dist-check-appimage`、`just dist-check-appimage-host` が成功した。
+
 `readelf --version-info` でバイナリが要求するGLIBCシンボルの最大版は2.39だった。バイナリに開発ディレクトリの絶対パスが含まれないことも確認した。
 
 AppImageは [Smoke.Containerfile](../packaging/linux/Smoke.Containerfile) のUbuntu 24.04内で確認する。この環境にはシステムのlibheifやプラグインを導入しない。`just dist-check-appimage` は既存の実コーデックテストから8/10bit AVIF/HEICを生成し、AppImageのSHA256、展開・FUSE不要モード、同梱プラグインの構成、Xvfb＋Mesa VulkanでのGUI起動とPNG・AVIF/HEIC・PDF（スクリプトが生成する1ページの合成PDF）の読み込み完了を検証する。ピクセル比較・入力操作の回帰テストではなく、配布物の起動とデコードの検証。

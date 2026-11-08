@@ -66,11 +66,15 @@ struct Key {
     vector: bool,
 }
 type Images = Arc<[Arc<RenderImage>]>;
-/// 表示解像度で描き直せるPDFのページ（文字・図形を含む単独表示のページ）。
+/// 表示解像度で描き直せるPDFのページ（文字・図形を含むページ、またはその見開き）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Vector {
     pub path: std::path::PathBuf,
     pub page: u32,
+    /// ページの論理寸法（pt）。
+    pub size: [f32; 2],
+    /// 見開きなら2ページ目と並べ方。
+    pub spread: Option<crate::pipeline::Spread>,
     /// 利用者の追加回転。描いた後に反映する。
     pub turns: u8,
 }
@@ -92,19 +96,49 @@ fn redraw(
     } else {
         (width, height)
     };
-    let rendered = pdf::render(
-        &vector.path,
-        vector.page,
-        pdf::Mode::Size { width, height },
-        pdf::Class::Display,
-        cancelled,
-    )
-    .map_err(pdf::Failure::message)?;
+    let draw = |page, width, height| {
+        pdf::render(
+            &vector.path,
+            page,
+            pdf::Mode::Size { width, height },
+            pdf::Class::Display,
+            &cancelled,
+        )
+        .map(|rendered| rendered.pixels)
+        .map_err(pdf::Failure::message)
+    };
+    let pixels = match vector.spread {
+        None => draw(vector.page, width, height)?,
+        Some(spread) => {
+            // 見開きは2ページを同じ倍率で描き、パイプラインの合成と同じく上揃えで並べる。
+            let scale = (width as f32 / (vector.size[0] + spread.size[0]))
+                .min(height as f32 / vector.size[1].max(spread.size[1]));
+            let pixels = |size: [f32; 2]| {
+                (
+                    ((size[0] * scale).round() as u32).max(1),
+                    ((size[1] * scale).round() as u32).max(1),
+                )
+            };
+            let (w1, h1) = pixels(vector.size);
+            let (mut w2, h2) = pixels(spread.size);
+            // 幅で倍率が決まったときは、丸めの端数を2ページ目に寄せて要求の幅に合わせる。
+            if (width as f32 / (vector.size[0] + spread.size[0]) - scale).abs() < f32::EPSILON {
+                w2 = width.saturating_sub(w1).max(1);
+            }
+            let first = draw(vector.page, w1, h1)?;
+            let second = draw(spread.page, w2, h2)?;
+            let mut canvas = image::RgbaImage::new(w1 + w2, h1.max(h2));
+            let (x1, x2) = if spread.rtl { (w2, 0) } else { (0, w1) };
+            image::imageops::replace(&mut canvas, &first, i64::from(x1), 0);
+            image::imageops::replace(&mut canvas, &second, i64::from(x2), 0);
+            canvas
+        }
+    };
     let pixels = match vector.turns % 4 {
-        1 => image::imageops::rotate90(&rendered.pixels),
-        2 => image::imageops::rotate180(&rendered.pixels),
-        3 => image::imageops::rotate270(&rendered.pixels),
-        _ => rendered.pixels,
+        1 => image::imageops::rotate90(&pixels),
+        2 => image::imageops::rotate180(&pixels),
+        3 => image::imageops::rotate270(&pixels),
+        _ => pixels,
     };
     Ok(Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])))
 }
@@ -416,8 +450,70 @@ impl Drop for State {
 
 #[cfg(test)]
 mod tests {
-    use super::{Algorithm, resize};
+    use super::{Algorithm, Vector, redraw, resize};
+    use crate::pdf;
     use gpui::RenderImage;
+
+    #[test]
+    fn pdf_spreads_are_redrawn_side_by_side_at_one_scale() {
+        use crate::pdf::synthetic::{Item, Page};
+        let _serial = pdf::CLASS_TESTS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let page = |size: [f32; 2], rgb| Page {
+            size,
+            items: vec![Item::Rect {
+                rgb,
+                rect: [0., 0., size[0], size[1]],
+            }],
+            ..Page::default()
+        };
+        let path = std::env::temp_dir().join(format!("nagame-spread-{}.pdf", std::process::id()));
+        std::fs::write(
+            &path,
+            pdf::synthetic::pdf(
+                &[
+                    page([100., 50.], [255, 0, 0]),
+                    page([50., 50.], [0, 0, 255]),
+                ],
+                false,
+            ),
+        )
+        .unwrap();
+        for rtl in [false, true] {
+            let vector = Vector {
+                path: path.clone(),
+                page: 0,
+                size: [100., 50.],
+                spread: Some(crate::pipeline::Spread {
+                    page: 1,
+                    size: [50., 50.],
+                    rtl,
+                }),
+                turns: 0,
+            };
+            let image = redraw(&vector, 300, 100, || false).unwrap();
+            assert_eq!(
+                (
+                    u32::from(image.size(0).width),
+                    u32::from(image.size(0).height)
+                ),
+                (300, 100)
+            );
+            let bytes = image.as_bytes(0).unwrap();
+            let pixel = |x: usize| bytes[(50 * 300 + x) * 4..][..4].to_vec();
+            // BGRAの赤と青。1ページ目（200画素）と2ページ目（100画素）を読む向きに並べる。
+            let (red, blue) = (vec![0, 0, 255, 255], vec![255, 0, 0, 255]);
+            let (left, right) = if rtl { (&blue, &red) } else { (&red, &blue) };
+            assert_eq!(&pixel(10), left);
+            assert_eq!(&pixel(290), right);
+            assert_eq!(
+                &pixel(if rtl { 90 } else { 190 }),
+                if rtl { &blue } else { &red }
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
     #[test]
     fn stale_resize_results_are_discarded_and_oversized_targets_use_gpu() {
         use super::State;

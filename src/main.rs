@@ -1147,14 +1147,16 @@ impl Render for Viewer {
             ))
         } else if let Some(image) = &self.image {
             let scaled = if self.pressure_level < 2 {
-                // 文字・図形を含む単独表示のPDFページは、拡大時に表示解像度で描き直す。
+                // 文字・図形を含むPDFのページ（見開きを含む）は、拡大時に表示解像度で描き直す。
                 let vector = self
                     .pdf
                     .as_ref()
-                    .filter(|pdf| pdf.vector && self.pages == 1)
+                    .filter(|pdf| pdf.vector && (self.pages == 1 || pdf.spread.is_some()))
                     .map(|pdf| resample::Vector {
                         path: pdf.path.clone(),
                         page: pdf.page,
+                        size: pdf.size,
+                        spread: pdf.spread.filter(|_| self.pages == 2),
                         turns: self.turns,
                     });
                 self.resampling.prepare(

@@ -74,6 +74,17 @@ pub struct PdfPage {
     pub vector: bool,
     /// メモリー逼迫中に予算に合わせて縮めた。逼迫が収まった後の再表示で描き直す。
     pub reduced: bool,
+    /// 見開きの合成結果なら、2ページ目と並べ方（表示解像度で描き直すときに使う）。
+    pub spread: Option<Spread>,
+}
+
+/// 見開きの2ページ目。1ページ目はPdfPageのpageとsize。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spread {
+    pub page: u32,
+    pub size: [f32; 2],
+    /// 右から読む（2ページ目を左に置く）。
+    pub rtl: bool,
 }
 
 /// 逼迫中に縮めたPDFのページで、もう逼迫していない。キャッシュから使わず描き直す。
@@ -104,6 +115,7 @@ fn render_page(
         scale: rendered.scale,
         vector: rendered.vector,
         reduced: rendered.limited && pressure,
+        spread: None,
     });
     Ok(loaded)
 }
@@ -383,6 +395,11 @@ fn compose(
         (Some(a), Some(b)) => Some(PdfPage {
             vector: a.vector || b.vector,
             reduced: a.reduced || b.reduced,
+            spread: Some(Spread {
+                page: b.page,
+                size: b.size,
+                rtl,
+            }),
             ..a.clone()
         }),
         _ => None,
@@ -1037,7 +1054,7 @@ mod pdf_tests {
     #[test]
     fn pdf_pages_load_at_the_base_resolution_cache_and_align_spread_scales() {
         // 先読みはPDFの先読みの種類を使い、他のテストの先読みと置き換え合うため順番に動かす。
-        let _serial = pdf::PREFETCH_TESTS
+        let _serial = pdf::CLASS_TESTS
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let root = std::env::temp_dir().join(format!("nagame-pdf-pipeline-{}", std::process::id()));
@@ -1114,6 +1131,7 @@ mod pdf_tests {
                 scale,
                 vector: false,
                 reduced: false,
+                spread: None,
             });
             loaded
         };
@@ -1144,6 +1162,7 @@ mod pdf_tests {
                 scale: 2.,
                 vector: true,
                 reduced,
+                spread: None,
             });
             loaded
         };

@@ -57,10 +57,27 @@ pub fn run() -> i32 {
         }
     }
     let library = std::env::var_os(LIBRARY_ENV).map(PathBuf::from);
-    let Some(pdfium) = library.as_deref().and_then(load) else {
+    let Some((pdfium, fonts)) = library.as_deref().and_then(load) else {
         let _ = reply(&socket, &Response::Failed(Failure::Library), None);
         return 1;
     };
+    // 以後はフォントのディレクトリーを読むだけ。PDFは記述子で受け取る。
+    // シンボリックリンクのディレクトリーは、Landlockが実体で判定するため実体も許す。
+    let mut fonts = fonts;
+    let resolved: Vec<PathBuf> = fonts
+        .iter()
+        .filter_map(|path| path.canonicalize().ok())
+        .collect();
+    fonts.extend(resolved);
+    fonts.sort();
+    fonts.dedup();
+    let readable: Vec<&Path> = fonts.iter().map(PathBuf::as_path).collect();
+    let restricted = super::sandbox::restrict(&readable);
+    if std::env::var_os("NAGAME_PROFILE").is_some() {
+        eprintln!("pdf helper restricted: {restricted:?}");
+    }
+    #[cfg(not(test))]
+    let _ = restricted;
     if reply(&socket, &Response::Ready, None).is_err() {
         return 1;
     }
@@ -101,6 +118,8 @@ pub fn run() -> i32 {
             }
             #[cfg(test)]
             Request::Abort => std::process::abort(),
+            #[cfg(test)]
+            Request::Probe => (Response::Probe(super::sandbox::probe(restricted)), None),
         };
         if reply(&socket, &response, memory.as_ref()).is_err() {
             return 0;
@@ -116,7 +135,8 @@ fn reply(socket: &OwnedFd, response: &Response, memory: Option<&OwnedFd>) -> std
 
 /// PDFiumを読み込む。フォントの探索先は既定の代わりに使われるため、既定の4つに
 /// 利用者のフォントディレクトリーを加えて、存在するものだけを渡す。
-fn load(library: &Path) -> Option<&'static Pdfium> {
+/// PDFiumを読み込み、補助プロセスが読み取るフォントのディレクトリーと一緒に返す。
+fn load(library: &Path) -> Option<(&'static Pdfium, Vec<PathBuf>)> {
     let bindings = Pdfium::bind_to_library(library).ok()?;
     let mut directories: Vec<PathBuf> = [
         "/usr/share/fonts",
@@ -134,19 +154,23 @@ fn load(library: &Path) -> Option<&'static Pdfium> {
         .or_else(|| home.as_ref().map(|home| home.join(".local/share")));
     directories.extend(data.map(|data| data.join("fonts")));
     directories.extend(home.map(|home| home.join(".fonts")));
-    let directories: Vec<String> = directories
+    let mut directories: Vec<PathBuf> = directories
         .into_iter()
         .filter(|path| path.is_dir())
+        .collect();
+    let names: Vec<String> = directories
+        .iter()
         .filter_map(|path| path.to_str().map(str::to_owned))
         .collect();
-    let paths: Vec<&str> = directories.iter().map(String::as_str).collect();
+    let paths: Vec<&str> = names.iter().map(String::as_str).collect();
     let config = PdfiumLibraryConfig::new()
         .set_user_font_paths(&paths)
         .ok()?;
     // 補助プロセスの終了までPDFiumを使い続けるため、所有者を持たせず保持する。
-    Some(Box::leak(Box::new(Pdfium::new_with_config(
-        bindings, config,
-    ))))
+    let pdfium: &'static Pdfium = Box::leak(Box::new(Pdfium::new_with_config(bindings, config)));
+    // fontconfigを使えれば、埋め込みのないフォントはfontconfigで選ぶ（使えなければ上の探索先）。
+    directories.extend(super::fonts::install(pdfium).unwrap_or_default());
+    Some((pdfium, directories))
 }
 
 /// 記述子のPDFを開く。同じファイル（デバイス・iノード・大きさ・更新日時）なら使い回す。
