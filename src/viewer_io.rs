@@ -386,11 +386,7 @@ impl Viewer {
             let [w, h] = crate::decoder::dimensions(&path)?;
             Ok::<_, String>(i18n::image_information(i18n::ImageInformation {
                 path: &path,
-                format: &path
-                    .extension()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_uppercase(),
+                format: &crate::decoder::format_name(&path)?,
                 bytes: metadata.len(),
                 original: [w, h],
                 displayed: dimensions,

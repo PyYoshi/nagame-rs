@@ -41,7 +41,7 @@ just secrets
 | `just release` | 通常アプリのリリースビルド。出力は `target/release/nagame` |
 | `just dist-build` / `just dist-test` | crossとPodmanによる配布用ビルド／単体テスト。[環境と出力先](distribution.md) |
 | `just dist-appimage` | AppImage、ソースアーカイブ、ライセンス一覧、ビルド記録、SHA256を生成 |
-| `just dist-check-appimage` | AppImage生成後、システムlibheifのないUbuntuでPNG・8/10bit AVIF/HEICのGUI読み込みを検証 |
+| `just dist-check-appimage` | AppImage生成後、システムlibheifのないUbuntuでPNG・8/10bit AVIF/HEIC・拡張子と中身が違うファイルのGUI読み込みを検証 |
 | `just dist-check-appimage-host` | 生成済みAppImageを現在のデスクトップのWayland/X11とGPUドライバーで検証。画像読み込み後にテスト用ウィンドウを閉じる |
 | `just install-desktop BINARY` | 指定したAppImage／通常バイナリの起動項目とNagameアイコンをユーザー領域に登録 |
 | `just fmt` / `just fmt-check` | Rustコードの整形／整形検査 |
@@ -108,7 +108,7 @@ cargo tree --locked -i xattr
 | 表示文言・翻訳 | `locales/{ja,en}/nagame.ftl`、`src/i18n.rs`。[選定理由と追加手順](localization.md) |
 | 操作の追加、キー割り当て | `main.rs` の `Command` / `command` / `shortcut_command`、`bindings.rs` の `Shortcut` / `defaults`、`menu_ui.rs` |
 | 設定の追加 | `settings.rs` のフィールド・既定値・`normalize`、`settings_ui.rs` の `Field` / タブ / 表示・編集処理、`main.rs` の適用処理 |
-| 入力形式の追加 | `model.rs::supported`、`decoder.rs` のデコードと `dimensions`、実コーデックのテスト |
+| 入力形式の追加 | `model.rs::supported`、`decoder.rs` の中身による判定（`sniff`）・デコード・`dimensions`・`format_name`、実コーデックのテスト |
 | PDF | `pdf/mod.rs`（公開API・仲介スレッド・補助プロセスの起動と再起動・応答の検査）、`pdf/helper.rs`（PDFium・分類と基準解像度・memfdへの描画）、`pdf/ipc.rs`、`model.rs` の `Entry` / `Album::open_document` / `directories`、`pipeline.rs` の `render_page` / `common_scale`、`resample.rs` の `redraw` |
 | 出力形式の追加 | `viewer_io.rs` の形式許可・エンコード・RGBA変換、保存失敗時の既存ファイル保持テスト |
 | 画像送り・フォルダ移動 | `model.rs::Album`、`main.rs` の境界処理・見開きのページ送り、`pipeline.rs` の合成 |
@@ -140,7 +140,7 @@ cargo build --locked
 | `i18n` | Fluentの構文と重複、両言語のキー集合、全メッセージの整形、OS言語の対応付け、単数・複数形、英語へのフォールバック、並行呼び出し、利用者の文字列の保持 |
 | `model` | 数値順、空一覧、選択の維持、フォルダ探索、倍率とパン、PDFのページ列（文書順・並べ替えない）、見開きの先読み、PDFを入れ物とする探索（開けないPDFを飛ばす・隣接移動ではエラー）、PDFだけのフォルダ |
 | `pdf` | fontconfigへの問い合わせ（Shift_JISの書体名・言語・明朝／ゴシック・太さ）、可変フォントと静的フォントの選択、TTCの書体と表、補助プロセスの制限（読み取り・プロセス生成・ソケットの拒否）、JPEGのスキャンの解像度、回転とCropBoxを反映した寸法、BGRA・白背景・`/Rotate`、画像主体の判定（不可視テキストを除く）と基準解像度、上限での縮小、指定倍率、暗号化・破損・0ページ・範囲外のページ、PDFiumを読み込めない補助プロセス、異常終了からの再起動と再試行の上限、制限時間と時間切れの記録・F5での消去、待つ人がいない長い描画の中断、メモリー上限、待つのをやめた要求、要求の優先順位と置き換え、フォームXObjectで包んだスキャン |
-| `decoder` | BGRAと回転、JPE、破損ファイル、GIFの時間・回転・遅延0の保持・1フレームの上限・先頭フレームのみ・中止、実AVIF/HEIC |
+| `decoder` | BGRAと回転、JPE、拡張子と中身が違うファイル（WebP・PNG・GIF、別の拡張子のAVIF/HEIC）とftypのブランドの判定、破損ファイル、GIFの時間・回転・遅延0の保持・1フレームの上限・先頭フレームのみ・中止、実AVIF/HEIC |
 | `animation` | 遅延の丸め、全フレーム保持（チャンクの大きさ、ループで再デコードしない）、予算超過時の逐次デコード（ループをまたぐ順序、先読みの上限、再生済みチャンクの退役）、保持の試みのペース制御、逼迫時の打ち切り、保持中からの逐次デコードへの移行、先頭前のデコード失敗 |
 | `memory` | 予算の導出と下限・上限、OS情報で下げるだけの計算、meminfo・cgroupの解析と祖先の制限、台帳の重複除外、PSI通知の確認条件 |
 | `pipeline` | PDFのページの基準解像度・先読みのキャッシュ・見開きの倍率合わせ（上限での縮小を含む）・逼迫中に縮めたページの描き直し、キャッシュ再利用とファイル更新、見開きの左右・横長・回転、幅0のページの拒否とワーカーの継続、Viewerの保持量に応じたキャッシュの縮小と重複の数え方、GIFの逐次デコード→全フレーム保持の登録→再訪時の再利用、見開きのGIFページとのキーの区別 |

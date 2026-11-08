@@ -117,7 +117,7 @@ PDF対応の組み込み後（同日）に、`just dist-test` でPDFの描画テ
 
 `readelf --version-info` でバイナリが要求するGLIBCシンボルの最大版は2.39だった。バイナリに開発ディレクトリの絶対パスが含まれないことも確認した。
 
-AppImageは [Smoke.Containerfile](../packaging/linux/Smoke.Containerfile) のUbuntu 24.04内で確認する。この環境にはシステムのlibheifやプラグインを導入しない。`just dist-check-appimage` は既存の実コーデックテストから8/10bit AVIF/HEICを生成し、AppImageのSHA256、展開・FUSE不要モード、同梱プラグインの構成、Xvfb＋Mesa VulkanでのGUI起動とPNG・AVIF/HEIC・PDF（スクリプトが生成する1ページの合成PDF）の読み込み完了を検証する。ピクセル比較・入力操作の回帰テストではなく、配布物の起動とデコードの検証。
+AppImageは [Smoke.Containerfile](../packaging/linux/Smoke.Containerfile) のUbuntu 24.04内で確認する。この環境にはシステムのlibheifやプラグインを導入しない。`just dist-check-appimage` は既存の実コーデックテストから8/10bit AVIF/HEICを生成し、AppImageのSHA256、展開・FUSE不要モード、同梱プラグインの構成、Xvfb＋Mesa VulkanでのGUI起動とPNG・AVIF/HEIC・PDF（スクリプトが生成する1ページの合成PDF）、拡張子と中身が違うファイル（中身がPNGの `.avif`、中身がAVIFの `.png`）の読み込み完了を検証する。ピクセル比較・入力操作の回帰テストではなく、配布物の起動とデコードの検証。
 
 `just dist-check-appimage-host` は生成済みのAppImageとコーデック検証用画像を使い、利用できるWaylandとX11の両方で、通常のAppImage実行経路（FUSE）からGUI起動と読み込みを確認する。ホストの設定は変更せず、一時的な設定ディレクトリを使う。同梱Waylandライブラリの再混入とVulkanドライバーのシンボル解決エラーも検出する。
 

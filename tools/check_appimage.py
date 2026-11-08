@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -72,6 +73,10 @@ def main():
         png(root / 'test.png', 320, 240, (220, 20, 10, 255))
         pdf(root / 'test.pdf')
         fixtures += [root / 'test.png', root / 'test.pdf']
+        # 拡張子と中身が違うファイル（ダウンロードした画像に多い）も、中身の形式で開く。
+        png(root / 'png-content.avif', 320, 240, (20, 220, 10, 255))
+        shutil.copy(fixtures_directory / 'red-8.avif', root / 'avif-content.png')
+        fixtures += [root / 'png-content.avif', root / 'avif-content.png']
         assert {p.suffix for p in fixtures} >= {'.avif', '.heic', '.png', '.pdf'}
         for mode, fixture in [(mode, fixture) for mode in modes for fixture in fixtures]:
             env = dict(os.environ, NAGAME_PROFILE='1', LANG='C.UTF-8', LANGUAGE='en',

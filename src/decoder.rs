@@ -3,10 +3,119 @@
 
 use crate::i18n::tr;
 use image::{AnimationDecoder, Frame, ImageDecoder, ImageFormat, ImageReader, Limits};
-use std::{fs::File, io::BufReader, path::Path};
+use std::{
+    fs::File,
+    io::{BufReader, Read},
+    path::Path,
+};
 
 /// 呼び出し側が上限を決めない場合（性能計測・テスト）の展開上限。1辺16,384ピクセルのRGBA。
 pub const DEFAULT_LIMIT: u64 = 16384 * 16384 * 4;
+
+/// 形式の判定に読む先頭のバイト数。各形式の識別子と、HEIF系のftypボックス（ブランドの一覧）が
+/// 収まる。
+const HEAD: u64 = 4096;
+
+/// 中身から判定した、復号に使うライブラリと形式。
+#[derive(Debug, PartialEq)]
+enum Kind {
+    /// libheifで復号する。値は情報画面に出す形式名。
+    Heif(&'static str),
+    /// imageクレートで復号する。Noneは中身から判定できず、拡張子による形式を使う。
+    Image(Option<ImageFormat>),
+}
+
+/// 拡張子ではなく中身から形式を判定する。ダウンロードした画像には、拡張子と中身が違うもの
+/// （中身がWebPの `.avif` など）がある。中身から判定できない場合だけ拡張子を使う。
+fn sniff(path: &Path) -> Result<Kind, String> {
+    let mut head = Vec::new();
+    File::open(path)
+        .and_then(|file| file.take(HEAD).read_to_end(&mut head))
+        .map_err(|e| e.to_string())?;
+    if let Some(name) = heif_name(&head) {
+        return Ok(Kind::Heif(name));
+    }
+    if let Ok(format) = image::guess_format(&head) {
+        return Ok(Kind::Image(Some(format)));
+    }
+    Ok(match extension(path).as_str() {
+        "avif" => Kind::Heif("AVIF"),
+        "heic" => Kind::Heif("HEIC"),
+        "heif" | "hif" => Kind::Heif("HEIF"),
+        _ => Kind::Image(None),
+    })
+}
+
+/// 先頭のftypボックスがHEIF系のブランドを含めば、その形式名。HEIFの規格では、静止画は
+/// `mif1`（または `mif2`）、画像列は `msf1` をブランドに含める。libheifは `1pic` だけの
+/// ファイルも読む。
+fn heif_name(head: &[u8]) -> Option<&'static str> {
+    if head.len() < 16 || &head[4..8] != b"ftyp" {
+        return None;
+    }
+    let size = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
+    if size < 16 {
+        return None;
+    }
+    // 主ブランド、マイナーバージョン（4バイト）、互換ブランドの並び。
+    let major = head[8..].first_chunk::<4>()?;
+    let brands: Vec<&[u8; 4]> = std::iter::once(major)
+        .chain(head[16..size.min(head.len())].as_chunks::<4>().0)
+        .collect();
+    let has = |names: &[&[u8; 4]]| brands.iter().any(|brand| names.contains(brand));
+    if has(&[b"avif", b"avis"]) {
+        Some("AVIF")
+    } else if has(&[
+        b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs",
+    ]) {
+        Some("HEIC")
+    } else if has(&[b"mif1", b"mif2", b"msf1", b"1pic"]) {
+        Some("HEIF")
+    } else {
+        None
+    }
+}
+
+fn extension(path: &Path) -> String {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// imageクレートの読み手。中身から判定した形式を、拡張子による形式より優先する。
+fn image_reader(
+    path: &Path,
+    format: Option<ImageFormat>,
+    limit: u64,
+) -> Result<ImageReader<BufReader<File>>, String> {
+    let mut reader = ImageReader::open(path).map_err(|e| e.to_string())?;
+    if let Some(format) = format {
+        reader.set_format(format);
+    }
+    reader.limits(limits(limit));
+    Ok(reader)
+}
+
+/// 情報画面に出す形式名。中身から判定し、判定できなければ拡張子から決める（HEIF系以外は
+/// 拡張子を大文字にする）。
+#[allow(dead_code)] // decode-benchもこのモジュールを使うが、情報画面は持たない。
+pub fn format_name(path: &Path) -> Result<String, String> {
+    Ok(match sniff(path)? {
+        Kind::Heif(name) => name.into(),
+        Kind::Image(Some(format)) => match format {
+            ImageFormat::Png => "PNG".into(),
+            ImageFormat::Jpeg => "JPEG".into(),
+            ImageFormat::Gif => "GIF".into(),
+            ImageFormat::WebP => "WebP".into(),
+            ImageFormat::Bmp => "BMP".into(),
+            ImageFormat::Tiff => "TIFF".into(),
+            ImageFormat::Ico => "ICO".into(),
+            other => format!("{other:?}").to_uppercase(),
+        },
+        Kind::Image(None) => extension(path).to_uppercase(),
+    })
+}
 
 /// 表示用BGRAフレームと、向き・追加回転を反映した寸法。
 /// Frameのバッファ型はRgbaImageだが、色順はRGBAではない。
@@ -28,12 +137,11 @@ fn limit_error(limit: u64) -> String {
     tr!("image-limit", limit = limit)
 }
 
-/// 内容から判定したGIFか。拡張子は見ない。
+/// 中身から判定したGIFか。中身から判定できない場合だけ拡張子を見る（`decode_limited` と同じ）。
 #[allow(dead_code)] // decode-benchもこのモジュールを使うが、アニメーションは開かない。
 pub fn is_gif(path: &Path) -> bool {
-    ImageReader::open(path)
-        .and_then(|reader| reader.with_guessed_format())
-        .is_ok_and(|reader| reader.format() == Some(ImageFormat::Gif))
+    matches!(sniff(path), Ok(Kind::Image(format))
+        if format.or_else(|| ImageFormat::from_path(path).ok()) == Some(ImageFormat::Gif))
 }
 
 /// 全フレームを返す。GIFの合計とその他の画像は `DEFAULT_LIMIT` まで。
@@ -53,19 +161,11 @@ pub fn decode_limited(
     all_frames: bool,
     cancelled: impl Fn() -> bool,
 ) -> Result<Decoded, String> {
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if matches!(ext.as_str(), "heic" | "heif" | "hif" | "avif") {
-        return finish(vec![Frame::new(decode_heif(path, limit)?)], turns);
-    }
-    let mut reader = ImageReader::open(path)
-        .map_err(|e| e.to_string())?
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    reader.limits(limits(limit));
+    let format = match sniff(path)? {
+        Kind::Heif(_) => return finish(vec![Frame::new(decode_heif(path, limit)?)], turns),
+        Kind::Image(format) => format,
+    };
+    let reader = image_reader(path, format, limit)?;
     if reader.format() == Some(ImageFormat::Gif) {
         let mut frames = Vec::new();
         let mut bytes = 0u64;
@@ -186,24 +286,18 @@ fn dimensions_of(frames: Vec<Frame>) -> Result<Decoded, String> {
 /// 画素を展開せずに、画像の向き情報を反映した幅と高さを読む（利用者の追加回転は含まない）。
 /// 見開きで横長のページを単独表示するかの判定と、情報画面に使う。
 pub fn dimensions(path: &Path) -> Result<[u32; 2], String> {
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if matches!(ext.as_str(), "heic" | "heif" | "hif" | "avif") {
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-        let _lib = libheif_rs::LibHeif::new();
-        let context =
-            libheif_rs::HeifContext::read_from_bytes(&bytes).map_err(|e| e.to_string())?;
-        let handle = context.primary_image_handle().map_err(|e| e.to_string())?;
-        return Ok([handle.width(), handle.height()]);
-    }
-    let mut reader = ImageReader::open(path)
-        .map_err(|e| e.to_string())?
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    reader.limits(limits(DEFAULT_LIMIT));
+    let format = match sniff(path)? {
+        Kind::Heif(_) => {
+            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+            let _lib = libheif_rs::LibHeif::new();
+            let context =
+                libheif_rs::HeifContext::read_from_bytes(&bytes).map_err(|e| e.to_string())?;
+            let handle = context.primary_image_handle().map_err(|e| e.to_string())?;
+            return Ok([handle.width(), handle.height()]);
+        }
+        Kind::Image(format) => format,
+    };
+    let reader = image_reader(path, format, DEFAULT_LIMIT)?;
     let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
     let (w, h) = decoder.dimensions();
     use image::metadata::Orientation::*;
@@ -287,6 +381,77 @@ mod tests {
         let pixel = decoded.frames[0].buffer().get_pixel(0, 0).0;
         assert!(pixel[2] > 240 && pixel[0] < 30);
         std::fs::remove_dir_all(folder).unwrap();
+    }
+    #[test]
+    fn contents_decide_the_format_not_the_extension() {
+        let folder =
+            std::env::temp_dir().join(format!("nagame-mislabelled-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        // ダウンロードした画像に多い、拡張子と中身が違うファイル。
+        let webp = folder.join("webp.avif");
+        image::RgbaImage::from_pixel(6, 4, image::Rgba([250, 10, 20, 255]))
+            .save_with_format(&webp, ImageFormat::WebP)
+            .unwrap();
+        let png = folder.join("png.heic");
+        image::RgbaImage::from_pixel(3, 5, image::Rgba([10, 20, 250, 255]))
+            .save_with_format(&png, ImageFormat::Png)
+            .unwrap();
+        // 2フレームのGIF。静止画として復号すると1フレームしか得られない。
+        let gif = folder.join("gif.avif");
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(File::create(&gif).unwrap());
+            for color in [[0, 255, 0, 255], [0, 0, 255, 255]] {
+                encoder
+                    .encode_frame(Frame::from_parts(
+                        image::RgbaImage::from_pixel(2, 2, image::Rgba(color)),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(100, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        for (path, size, bgra, name) in [
+            (&webp, [6, 4], [20, 10, 250, 255], "WebP"),
+            (&png, [3, 5], [250, 20, 10, 255], "PNG"),
+        ] {
+            let decoded = decode(path, 0).unwrap();
+            assert_eq!(decoded.dimensions, [size[0] as f32, size[1] as f32]);
+            assert_eq!(decoded.frames[0].buffer().get_pixel(0, 0).0, bgra);
+            assert_eq!(dimensions(path).unwrap(), size);
+            assert_eq!(format_name(path).unwrap(), name);
+            assert!(!is_gif(path));
+        }
+        assert!(is_gif(&gif));
+        assert_eq!(format_name(&gif).unwrap(), "GIF");
+        assert_eq!(decode(&gif, 0).unwrap().frames.len(), 2);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+    #[test]
+    fn heif_brands_are_read_from_the_ftyp_box() {
+        let ftyp = |major: &[u8; 4], compatible: &[&[u8; 4]]| {
+            let mut bytes = ((16 + 4 * compatible.len()) as u32).to_be_bytes().to_vec();
+            bytes.extend_from_slice(b"ftyp");
+            bytes.extend_from_slice(major);
+            bytes.extend_from_slice(&[0; 4]);
+            for brand in compatible {
+                bytes.extend_from_slice(*brand);
+            }
+            bytes
+        };
+        assert_eq!(heif_name(&ftyp(b"avif", &[b"mif1"])), Some("AVIF"));
+        assert_eq!(heif_name(&ftyp(b"mif1", &[b"avif", b"miaf"])), Some("AVIF"));
+        assert_eq!(heif_name(&ftyp(b"msf1", &[b"avis"])), Some("AVIF"));
+        assert_eq!(heif_name(&ftyp(b"heic", &[b"mif1"])), Some("HEIC"));
+        assert_eq!(heif_name(&ftyp(b"mif1", &[b"jpeg"])), Some("HEIF"));
+        assert_eq!(heif_name(&ftyp(b"1pic", &[])), Some("HEIF"));
+        // MP4の動画はHEIF系ではない。ボックスの外にあるバイト列はブランドとして読まない。
+        assert_eq!(heif_name(&ftyp(b"isom", &[b"mp41"])), None);
+        let mut outside = ftyp(b"isom", &[]);
+        outside.extend_from_slice(b"avif");
+        assert_eq!(heif_name(&outside), None);
+        assert_eq!(heif_name(b"RIFF\0\0\0\0WEBPVP8 "), None);
+        assert_eq!(heif_name(b"\0\0\0\x08ftypavif"), None);
     }
     #[test]
     fn corrupt_file_returns_error() {
@@ -390,6 +555,15 @@ mod modern_format_tests {
                 "expected red BGRA, got {color:?}"
             );
             assert!(color[3].abs_diff(96) <= 4, "alpha={}", color[3]);
+            // 拡張子が別の形式でも、中身からlibheifで復号する。
+            let renamed = path.with_extension("png");
+            std::fs::copy(&path, &renamed).unwrap();
+            assert_eq!(decode(&renamed, 0).unwrap().dimensions, [32., 24.]);
+            assert_eq!(dimensions(&renamed).unwrap(), [32, 24]);
+            let name = if extension == "avif" { "AVIF" } else { "HEIC" };
+            assert_eq!(format_name(&renamed).unwrap(), name);
+            assert!(!is_gif(&renamed));
+            std::fs::remove_file(renamed).unwrap();
             if let Some(directory) = std::env::var_os("NAGAME_CODEC_FIXTURE_DIR") {
                 let directory = std::path::PathBuf::from(directory);
                 std::fs::create_dir_all(&directory).unwrap();
