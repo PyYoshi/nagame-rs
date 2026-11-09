@@ -39,7 +39,7 @@ just secrets
 | `just install-hooks` | このリポジトリのコミットフックだけを有効化 |
 | `just build` | 開発用ビルド |
 | `just release` | 通常アプリのリリースビルド。出力は `target/release/nagame` |
-| `just dist-build` / `just dist-test` | crossとPodmanによる配布用ビルド／単体テスト。[環境と出力先](distribution.md) |
+| `just dist-build` / `just dist-test` | crossとPodman（PodmanがなくDockerがあればDocker）による配布用ビルド／単体テスト。[環境と出力先](distribution.md) |
 | `just dist-appimage` | AppImage、ソースアーカイブ、ライセンス一覧、ビルド記録、SHA256を生成 |
 | `just dist-check-appimage` | AppImage生成後、システムlibheifのないUbuntuでPNG・8/10bit AVIF/HEIC・拡張子と中身が違うファイルのGUI読み込みを検証 |
 | `just dist-check-appimage-host` | 生成済みAppImageを現在のデスクトップのWayland/X11とGPUドライバーで検証。画像読み込み後にテスト用ウィンドウを閉じる |

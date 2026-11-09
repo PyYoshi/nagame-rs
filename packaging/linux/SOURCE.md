@@ -17,7 +17,7 @@ cargo build --frozen --release --bin nagame --target x86_64-unknown-linux-gnu
 `.cargo/config.toml` selects the included `rust-vendor/` directory. The source
 bundle does not require crates.io access. Container images, Rust itself and OS
 build tools are obtained separately. See `nagame/docs/distribution.md` for the
-normal cross/Podman packaging workflow. Bit-for-bit reproducibility is not claimed.
+normal cross/Podman (or Docker) packaging workflow. Bit-for-bit reproducibility is not claimed.
 
 ## Native libraries
 

@@ -2,7 +2,7 @@
 
 ## 対象と環境
 
-最初の配布対象はLinux x86_64。ビルドの窓口は [cross](https://github.com/cross-rs/cross)、コンテナーエンジンはPodmanとする。[Cross.toml](../Cross.toml) から [Containerfile](../packaging/linux/Containerfile) を指定し、GPUIとlibheifに必要なネイティブライブラリを用意する。crossはコンテナーのビルド、Rustツールチェーンのマウント、Cargoの実行を担当する。[公式のカスタムイメージ設定](https://github.com/cross-rs/cross/wiki/Configuration#custom-images) を利用している。
+最初の配布対象はLinux x86_64。ビルドの窓口は [cross](https://github.com/cross-rs/cross)、コンテナーエンジンはPodman（PodmanがなくDockerがある場合はDocker）とする。[Cross.toml](../Cross.toml) から [Containerfile](../packaging/linux/Containerfile) を指定し、GPUIとlibheifに必要なネイティブライブラリを用意する。crossはコンテナーのビルド、Rustツールチェーンのマウント、Cargoの実行を担当する。[公式のカスタムイメージ設定](https://github.com/cross-rs/cross/wiki/Configuration#custom-images) を利用している。
 
 | 項目 | 選択 |
 |---|---|
@@ -20,7 +20,7 @@ Ubuntu 24.04は [標準セキュリティ保守が2029年5月まで](https://ubu
 
 ## 実行
 
-ホストにrustupとPodmanを用意し、`podman info` が成功する状態にする。開発用CLIの導入は [開発・検証](development.md#開発ツールと秘密情報の検査) を参照する。初回はネットワーク接続が必要。
+ホストにrustupとPodmanまたはDockerを用意し、`podman info`（Dockerなら `docker info`）が成功する状態にする。開発用CLIの導入は [開発・検証](development.md#開発ツールと秘密情報の検査) を参照する。初回はネットワーク接続が必要。
 
 ```sh
 aqua policy allow aqua-policy.yaml
@@ -33,6 +33,10 @@ just dist-check-appimage
 # デスクトップ環境がある場合、生成済みAppImageを実ドライバーでも確認
 just dist-check-appimage-host
 ```
+
+justfileは `CROSS_CONTAINER_ENGINE` を見てエンジンを選ぶ。未設定ならPodmanを使い、PodmanがなくDockerがある場合だけDockerを使う。両方ある環境でDockerを使うときは `CROSS_CONTAINER_ENGINE=docker just dist-appimage` のように指定する。選んだエンジンは、crossと、AppImageを組み立てるコンテナー・確認用のコンテナーに共通で使う。イメージはエンジンごとに保存されるため、切り替えた直後はイメージを作り直す。
+
+AppDirの組み立ては、`apt-get source` のためにコンテナー内のrootで行う。rootのコンテナーエンジンでは、作ったファイルの所有者がホストのrootになる。このため組み立て後に、所有者を利用者へ戻す（失敗時も）。rootかどうかの判定はcrossと同じで、Docker（Podmanの互換コマンドを除く）をroot、ほかをrootlessとみなす。rootlessのDockerなどでは `CROSS_ROOTLESS_CONTAINER_ENGINE=1`（逆は `0`）で指定する。
 
 `aqua policy allow` の前に [aqua-policy.yaml](../aqua-policy.yaml) と [ローカルレジストリ](../packaging/linux/aqua-registry.yaml) を確認する。aquaが標準外レジストリを既定で拒否するための初回設定で、標準レジストリに加え、指定した4ツールだけを許可する。[aquaのポリシー仕様](https://aquaproj.github.io/docs/guides/policy-as-code/) を参照。
 

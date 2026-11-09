@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Podmanで、AppImage・ライセンス表示・ソースアーカイブ・チェックサムをローカルに生成する。"""
+"""PodmanまたはDockerで、AppImage・ライセンス表示・ソースアーカイブ・チェックサムをローカルに生成する。"""
 # SPDX-License-Identifier: GPL-3.0-or-later
 import hashlib
 import html
@@ -30,8 +30,29 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def container_engine():
+    """justfileと同じ規則で選ぶ。指定がなければPodman、PodmanがなくDockerがあればDocker。"""
+    if os.environ.get('CROSS_CONTAINER_ENGINE'):
+        return os.environ['CROSS_CONTAINER_ENGINE']
+    return 'docker' if not shutil.which('podman') and shutil.which('docker') else 'podman'
+
+
+def runs_as_root(engine):
+    """コンテナー内のrootがホストのrootか。crossと同じく、Docker（Podmanの互換コマンドを除く）は
+    rootで動き、ほかはrootlessとみなす。CROSS_ROOTLESS_CONTAINER_ENGINEで上書きできる。"""
+    setting = os.environ.get('CROSS_ROOTLESS_CONTAINER_ENGINE', 'auto').lower()
+    if setting in ('1', 'true'):
+        return False
+    if setting in ('0', 'false'):
+        return True
+    usage = run(engine, '--help', stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.lower()
+    return 'docker' in usage and 'podman' not in usage and 'emulate' not in usage
+
+
 def main():
     version = tomllib.loads((ROOT / 'Cargo.toml').read_text())['package']['version']
+    engine = container_engine()
+    as_root = runs_as_root(engine)
     output = ROOT / 'target/dist/appimage'
     output.mkdir(parents=True, exist_ok=True)
     binary = ROOT / 'target/dist-linux-x86_64/x86_64-unknown-linux-gnu/release/nagame'
@@ -119,8 +140,16 @@ def main():
                   '-v', f'{binary.parent}:/binary:ro,z', '-v', f'{pdfium}:/pdfium:ro,z']
         for name, path in tools.items():
             mounts += ['-v', f'{path}:/tools/{name}:ro,z']
-        run('podman', 'run', '--rm', '--platform', 'linux/amd64', *mounts,
-            'localhost/nagame-package:ubuntu24.04', 'python3', '/source/packaging/linux/package.py', version)
+        image = 'localhost/nagame-package:ubuntu24.04'
+        try:
+            run(engine, 'run', '--rm', '--platform', 'linux/amd64', *mounts,
+                image, 'python3', '/source/packaging/linux/package.py', version)
+        finally:
+            if as_root:
+                # apt-get sourceのためにrootで組み立てる。失敗しても一時ディレクトリーを消せるよう、
+                # 作ったファイルを利用者の所有に戻す。
+                run(engine, 'run', '--rm', '--platform', 'linux/amd64', '-v', f'{work}:/work:z',
+                    image, 'chown', '-R', f'{os.getuid()}:{os.getgid()}', '/work')
         shutil.copytree(work / 'Nagame.AppDir/usr/share/doc/nagame', source / 'licenses')
         shutil.copy2(ROOT / 'packaging/linux/SOURCE.md', source / 'README.md')
         archive_path = work / f'Nagame-{version}-source.tar.gz'
