@@ -37,6 +37,14 @@ def container_engine():
     return 'docker' if not shutil.which('podman') and shutil.which('docker') else 'podman'
 
 
+def mount(source, target, *, kind, writable=False):
+    """コンテナーへ渡すバインドマウント。Dockerの -v は存在しないホストのパスを
+    rootのディレクトリーとして作り、コンテナー内で実行できない空ディレクトリーになる。先に種類を確かめる。"""
+    if not (source.is_file() if kind == 'file' else source.is_dir()):
+        raise RuntimeError(f'Mount source is not a {kind}: {source}')
+    return ['-v', f'{source}:{target}:{"" if writable else "ro,"}z']
+
+
 def runs_as_root(engine):
     """コンテナー内のrootがホストのrootか。crossと同じく、Docker（Podmanの互換コマンドを除く）は
     rootで動き、ほかはrootlessとみなす。CROSS_ROOTLESS_CONTAINER_ENGINEで上書きできる。"""
@@ -56,6 +64,10 @@ def main():
     output = ROOT / 'target/dist/appimage'
     output.mkdir(parents=True, exist_ok=True)
     binary = ROOT / 'target/dist-linux-x86_64/x86_64-unknown-linux-gnu/release/nagame'
+    if not binary.is_file():
+        raise RuntimeError(f'Distribution binary not found (run just dist-build): {binary}')
+    # aqua whichはパスを返すだけで導入しない。チェックサムを照合して導入してから参照する。
+    run('aqua', '-c', 'aqua.yaml', 'install')
     tools = {name: Path(capture('aqua', '-c', 'aqua.yaml', 'which', name))
              for name in ('linuxdeploy', 'appimagetool', 'appimage-runtime')}
     with tempfile.TemporaryDirectory(prefix='package-', dir=output) as temporary:
@@ -136,10 +148,12 @@ def main():
         shutil.copy2(ROOT / 'packaging/linux/runtime-sources.json', runtime_sources / 'sources.json')
         # PDFiumはUbuntuのパッケージではなく、SHA256で照合した固定版の配布物を同梱する。
         pdfium = Path(capture(sys.executable, str(ROOT / 'tools/fetch_pdfium.py'))).parent.parent
-        mounts = ['-v', f'{ROOT}:/source:ro,z', '-v', f'{work}:/work:z',
-                  '-v', f'{binary.parent}:/binary:ro,z', '-v', f'{pdfium}:/pdfium:ro,z']
+        mounts = [*mount(ROOT, '/source', kind='directory'),
+                  *mount(work, '/work', kind='directory', writable=True),
+                  *mount(binary.parent, '/binary', kind='directory'),
+                  *mount(pdfium, '/pdfium', kind='directory')]
         for name, path in tools.items():
-            mounts += ['-v', f'{path}:/tools/{name}:ro,z']
+            mounts += mount(path, f'/tools/{name}', kind='file')
         image = 'localhost/nagame-package:ubuntu24.04'
         try:
             run(engine, 'run', '--rm', '--platform', 'linux/amd64', *mounts,
@@ -148,8 +162,8 @@ def main():
             if as_root:
                 # apt-get sourceのためにrootで組み立てる。失敗しても一時ディレクトリーを消せるよう、
                 # 作ったファイルを利用者の所有に戻す。
-                run(engine, 'run', '--rm', '--platform', 'linux/amd64', '-v', f'{work}:/work:z',
-                    image, 'chown', '-R', f'{os.getuid()}:{os.getgid()}', '/work')
+                run(engine, 'run', '--rm', '--platform', 'linux/amd64',
+                    *mount(work, '/work', kind='directory', writable=True), image, 'chown', '-R', f'{os.getuid()}:{os.getgid()}', '/work')
         shutil.copytree(work / 'Nagame.AppDir/usr/share/doc/nagame', source / 'licenses')
         shutil.copy2(ROOT / 'packaging/linux/SOURCE.md', source / 'README.md')
         archive_path = work / f'Nagame-{version}-source.tar.gz'

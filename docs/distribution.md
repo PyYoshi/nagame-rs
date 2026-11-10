@@ -61,7 +61,7 @@ target/dist-linux-x86_64/x86_64-unknown-linux-gnu/release/nagame
 | type2-runtime | 20251108 |
 | cargo-about | 0.9.3 |
 
-ツール本体・実行ランタイムはaquaでチェックサム照合する。appimagetoolには `--runtime-file` を渡し、最新ランタイムの自動取得を避ける。[公式のオプション説明](https://github.com/AppImage/appimagetool#usage) を参照。FUSEのないコンテナーでは生成ツールを展開して実行する。
+ツール本体・実行ランタイムはaquaでチェックサム照合する。`aqua which` はパスを返すだけで導入しないため、[package_appimage.py](../tools/package_appimage.py) は先に `aqua install` を実行してからパスを取る。コンテナーへ渡すツール・バイナリー・ディレクトリーは、マウント前に実在を確かめる。Dockerの `-v` は存在しないホストのパスをrootのディレクトリーとして作り、コンテナー内での実行が `Permission denied` で失敗するため。appimagetoolには `--runtime-file` を渡し、最新ランタイムの自動取得を避ける。[公式のオプション説明](https://github.com/AppImage/appimagetool#usage) を参照。FUSEのないコンテナーでは生成ツールを展開して実行する。
 
 `target/dist/appimage/` に次を生成する。ファイル名の版はCargo.tomlに従う。
 
