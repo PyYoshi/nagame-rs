@@ -1,5 +1,5 @@
 # 組み込みの検出規則はそのまま使い、生成物とローカルのツールの状態だけを除く。
-# このファイルは --config で明示して渡す（Betterleaks v1.10.0）。
+# このファイルは --config で明示して渡す（Betterleaks v1.10.1）。
 title = "Nagame secret scanning"
 prefilter = '''
 filter.matchesAny(attributes["path"], [

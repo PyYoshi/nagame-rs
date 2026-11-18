@@ -89,7 +89,7 @@ GIFのフレーム数に上限はありません。全フレームが保持の�
 
 ## ビルド環境
 
-Rust 1.99.1、GPUI 0.2.2 でビルド・テストしています。依存は `Cargo.lock` に固定しています。LinuxではVulkan対応環境、WaylandまたはX11、Fontconfig、FreeType、xkbcommon関連とlibheifの開発ライブラリが必要です。AVIF用AV1デコーダーとHEIC用HEVCデコーダーも必要です。
+Rust 1.100以降が必要です。Rust 1.100.0、GPUI 0.2.2 でビルド・テストしています。依存は `Cargo.lock` に固定しています。LinuxではVulkan対応環境、WaylandまたはX11、Fontconfig、FreeType、xkbcommon関連とlibheifの開発ライブラリが必要です。AVIF用AV1デコーダーとHEIC用HEVCデコーダーも必要です。
 
 Fedora/Nobara系の開発用パッケージ例：
 

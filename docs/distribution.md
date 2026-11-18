@@ -8,7 +8,7 @@
 |---|---|
 | ビルドOS | Ubuntu 24.04 amd64。ベースイメージのdigestをContainerfileで固定 |
 | glibc | 2.39 |
-| Rust | 1.99.1。justfileの `cross +1.99.1` で指定 |
+| Rust | 1.100.0。justfileの `cross +1.100.0` で指定 |
 | Rustターゲット | `x86_64-unknown-linux-gnu` |
 | CPU | `target-cpu=x86-64`。開発機固有の `native` は使わない |
 | libheif | Ubuntu 24.04の1.17.6系。現在のRust側の最小要件1.17を満たす |
@@ -119,7 +119,9 @@ PDF対応の組み込み後（同日）に、`just dist-test` でPDFの描画テ
 
 段階2（fontconfigによる代替フォント、補助プロセスのLandlock・seccomp）の組み込み後も、`just dist-test`（コンテナー内で制限を掛けた補助プロセスの確認を含む）、`just dist-check-appimage`、`just dist-check-appimage-host` が成功した。
 
-`readelf --version-info` でバイナリが要求するGLIBCシンボルの最大版は2.39だった。バイナリに開発ディレクトリの絶対パスが含まれないことも確認した。
+2026-11-18の依存更新（Rust 1.100.0、PDFium `chromium/8165`、Ubuntu 24.04のベースイメージのdigest、Cargoの依存）の後にも、`just dist-test`（単体テスト77件）、`just dist-check-appimage`、`just dist-check-appimage-host` が成功した。
+
+`readelf --version-info` でバイナリが要求するGLIBCシンボルの最大版は2.39だった（2026-11-18の更新後も同じ）。バイナリに開発ディレクトリの絶対パスが含まれないことも確認した。
 
 AppImageは [Smoke.Containerfile](../packaging/linux/Smoke.Containerfile) のUbuntu 24.04内で確認する。この環境にはシステムのlibheifやプラグインを導入しない。`just dist-check-appimage` は既存の実コーデックテストから8/10bit AVIF/HEICを生成し、AppImageのSHA256、展開・FUSE不要モード、同梱プラグインの構成、Xvfb＋Mesa VulkanでのGUI起動とPNG・AVIF/HEIC・PDF（スクリプトが生成する1ページの合成PDF）、拡張子と中身が違うファイル（中身がPNGの `.avif`、中身がAVIFの `.png`）の読み込み完了を検証する。ピクセル比較・入力操作の回帰テストではなく、配布物の起動とデコードの検証。
 

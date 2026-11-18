@@ -3,7 +3,7 @@ name = "nagame"
 default-run = "nagame"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.100"
 description = "A fast single-window image viewer built with Rust and GPUI"
 license = "GPL-3.0-or-later"
 
@@ -20,10 +20,12 @@ rust-embed = { version = "8", features = ["debug-embed"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # PDFのページ描画。補助プロセスだけがPDFiumを動的ロードする。APIのfeatureはPDFium本体の版
-# （packaging/linux/pdfium.json）と一緒に固定する。
+# （packaging/linux/pdfium.json）と一緒に固定する。0.9.5の最新featureは8125で、本体の8165とは
+# 公開ヘッダーが同一（docs/pdf-support.md）。
 pdfium-render = { version = "=0.9.5", default-features = false, features = ["pdfium_8125"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+# GPUI 0.2.2と同じ0.13系を使う。0.14へ上げると別の版が二重に入る。
 x11rb = { version = "0.13", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]

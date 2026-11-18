@@ -7,7 +7,7 @@ Rust dependency, Rust toolchain, native library and AppImage runtime notices.
 
 ## Application
 
-With Rust 1.99.1 and the native development libraries described in
+With Rust 1.100.0 and the native development libraries described in
 `nagame/packaging/linux/Containerfile`, run from `nagame/`:
 
 ```sh
@@ -34,8 +34,8 @@ extract the AppImage with `--appimage-extract`, replace the library in
 
 ## PDFium
 
-`usr/lib/libpdfium.so` in the AppDir is the prebuilt PDFium 158.0.8125.0
-(`chromium/8125`, without V8/XFA) from bblanchon/pdfium-binaries, pinned by URL
+`usr/lib/libpdfium.so` in the AppDir is the prebuilt PDFium 160.0.8165.0
+(`chromium/8165`, without V8/XFA) from bblanchon/pdfium-binaries, pinned by URL
 and SHA256 in `nagame/packaging/linux/pdfium.json` (also recorded in
 `build-info.json`). PDFium is BSD-3-Clause/Apache-2.0; its own and its bundled
 third-party notices are in `licenses/third-party/pdfium/`. `just pdfium` (or
@@ -43,8 +43,9 @@ third-party notices are in `licenses/third-party/pdfium/`. `just pdfium` (or
 
 Nagame loads PDFium only in its PDF helper process, from `../lib/libpdfium.so`
 relative to the executable or from the absolute path in `NAGAME_PDFIUM_LIBRARY`.
-A replacement must provide the same PDFium API version (pdfium-render's
-`pdfium_8125` feature); replace the file in an extracted AppDir as above.
+A replacement must provide the PDFium API that Nagame is built against
+(pdfium-render's `pdfium_8125` feature; the public headers of `chromium/8165`
+are identical to it); replace the file in an extracted AppDir as above.
 
 ## AppImage runtime
 

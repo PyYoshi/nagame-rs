@@ -17,12 +17,14 @@ PDFiumと`pdfium-render`を採用する。独立した試作で描画・配布�
 |---|---|
 | Rustラッパー | `pdfium-render = "=0.9.5"` |
 | feature | `default-features = false`、`pdfium_8125`。`image`連携・`thread_safe`は使わない |
-| PDFium | 158.0.8125.0（`chromium/8125`）のV8なしビルド。`pdf_enable_v8 = false`、`pdf_enable_xfa = false` |
+| PDFium | 160.0.8165.0（`chromium/8165`）のV8なしビルド。`pdf_enable_v8 = false`、`pdf_enable_xfa = false` |
 | 読み込み | 明示した絶対パスから動的ロード。作業ディレクトリやシステムの任意版を自動探索しない |
 | 出力 | `PdfBitmapFormat::BGRA`、`set_reverse_byte_order(false)`（既定のtrueではRGBAになる）、白背景 |
 | 日本語フォールバック | Noto Sans CJK JP Regularで検証。探索先と配布時のフォント構成は [フォント](#フォント) を参照 |
 
 `pdfium_latest`は依存更新で指すAPIが変わるため使わず、PDFium本体とAPI featureを一緒に固定する。上記は動作確認した組み合わせであり、将来の配布でもこの版を更新せず使い続けるという意味ではない（[安全性](#安全性)）。
+
+`pdfium-render` 0.9.5が持つ最新のAPI featureは `pdfium_8125`。2026-11-18にPDFium本体を `chromium/8125` から `chromium/8165` へ更新した際は、配布物の `include/`（公開ヘッダー）と `args.gn` が8125と同一であることを確かめ、featureは `pdfium_8125` のままにした。本体だけを更新するときは同じ比較を行い、公開ヘッダーが変わっていれば対応するfeatureを持つ `pdfium-render` を待つか、変更点を確認してから更新する。
 
 ## 確認したことと限界
 
@@ -155,7 +157,7 @@ PDFは攻撃面が広い。PDFiumのメモリー安全性の脆弱性は継続�
 
 LinuxではAppDir内の`libpdfium.so`、Windowsではアプリ同梱の`pdfium.dll`、macOSではアプリバンドル内の`libpdfium.dylib`を明示してロードする。探索先は実行ファイルの位置から決め、作業ディレクトリは見ない。ロードするのは補助プロセスだけ。PDFiumを見つけられない場合はPDFを開く操作にエラーを返し、通常画像の閲覧まで停止させない。AppImageでは補助プロセスもマウント中の同じバイナリーとAppRunの環境を引き継ぐので、`just dist-check-appimage` でPDFの描画まで確認する。
 
-今回確認した配布物は、Google公式のバイナリーではなく[bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries)によるビルド。本体へ導入するときは版・CPU・SHA256・出所をロックし、実行時の自動ダウンロードは行わない。Linux x86_64の確認済みアーカイブは`pdfium-linux-x64.tgz`、SHA256は`e1c3ce6e270cb5e0c20816b379ad9f2c1309972697c505f508de92bf5e7d6659`。上流のワークフローは `actions/attest-build-provenance` で出所の証明を作り、`pdfium-attestation.json` としてリリースに添付する。取得時はSHA256に加えて `gh attestation verify <archive> --repo bblanchon/pdfium-binaries` で確認する。2026-11-07に、固定したアーカイブでこの検証が成功した（`tools/fetch_pdfium.py` は `gh` があれば毎回検証する）。
+今回確認した配布物は、Google公式のバイナリーではなく[bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries)によるビルド。本体へ導入するときは版・CPU・SHA256・出所をロックし、実行時の自動ダウンロードは行わない。Linux x86_64の確認済みアーカイブは`pdfium-linux-x64.tgz`（`chromium/8165`）、SHA256は`ba7865e16c0271daab75256790be06c26272190afe6e2a70eae0bb39bb99089c`。上流のワークフローは `actions/attest-build-provenance` で出所の証明を作り、`pdfium-attestation.json` としてリリースに添付する。取得時はSHA256に加えて `gh attestation verify <archive> --repo bblanchon/pdfium-binaries` で確認する。2026-11-07に `chromium/8125`、2026-11-18に `chromium/8165` の固定したアーカイブでこの検証が成功した（`tools/fetch_pdfium.py` は `gh` があれば毎回検証する）。
 
 PDFium本体・配布物の`LICENSE`だけでなく、`licenses/`の第三者ライセンスも同梱する。`pdfium-render`はMIT／Apache-2.0。PDFiumはUbuntuのapt由来ではないため、現在のネイティブライブラリー収集とは別に、由来と配布条件を管理する。`build-info.json` にPDFiumの版とSHA256を記録し、`SOURCE.md` に差し替え方法を書く。
 
@@ -218,7 +220,7 @@ PDFium本体・配布物の`LICENSE`だけでなく、`licenses/`の第三者ラ
 - [PDFiumの公開API](https://pdfium.googlesource.com/pdfium/+/refs/heads/main/public/fpdfview.h)：スレッド制約、ビットマップ、初期化設定（`m_pUserFontPaths`）。
 - [PDFiumの段階描画API](https://pdfium.googlesource.com/pdfium/+/refs/heads/main/public/fpdf_progressive.h)：中断できる描画。
 - [PDFiumのLinuxのフォント探索](https://pdfium.googlesource.com/pdfium/+/refs/heads/main/core/fxge/linux/fx_linux_impl.cpp)と[代替フォントの選び方](https://pdfium.googlesource.com/pdfium/+/refs/heads/main/core/fxge/cfx_folderfontinfo.cpp)：既定の探索先、日本語の名前表、類似度による選択。
-- [検証したPDFium配布物](https://github.com/bblanchon/pdfium-binaries/releases/tag/chromium%2F8125)：対応する版の成果物。
+- [検証したPDFium配布物](https://github.com/bblanchon/pdfium-binaries/releases/tag/chromium%2F8165)：対応する版の成果物。
 - [pdfium-binariesのビルドワークフロー](https://github.com/bblanchon/pdfium-binaries/blob/master/.github/workflows/build-all.yml)と[ビルド設定](https://github.com/bblanchon/pdfium-binaries/blob/master/steps/05-configure.sh)：出所の証明、V8・XFAの設定。
 - [hayro-interpretの非埋め込みフォントの扱い](https://docs.rs/hayro-interpret/latest/hayro_interpret/font/enum.FontQuery.html)：代替検索が未対応であること。
 - [Noto CJKのフォントライセンス](https://github.com/notofonts/noto-cjk/blob/main/Sans/LICENSE)：フォールバック用フォントを同梱する場合の条件。

@@ -1,7 +1,7 @@
 {
-  "version": "158.0.8125.0",
-  "tag": "chromium/8125",
+  "version": "160.0.8165.0",
+  "tag": "chromium/8165",
   "archive": "pdfium-linux-x64.tgz",
-  "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8125/pdfium-linux-x64.tgz",
-  "sha256": "e1c3ce6e270cb5e0c20816b379ad9f2c1309972697c505f508de92bf5e7d6659"
+  "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8165/pdfium-linux-x64.tgz",
+  "sha256": "ba7865e16c0271daab75256790be06c26272190afe6e2a70eae0bb39bb99089c"
 }

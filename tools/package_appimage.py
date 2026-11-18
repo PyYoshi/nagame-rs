@@ -94,7 +94,7 @@ def main():
                      '<p>' + html.escape(', '.join(c['name'] + ' ' + c['version'] for c in entry['crates'])) + '</p>',
                      '<pre>' + html.escape(entry['text']) + '</pre>']
         (licenses / 'rust.html').write_text('\n'.join(page))
-        sysroot = Path(capture('rustup', 'run', '1.99.1', 'rustc', '--print', 'sysroot'))
+        sysroot = Path(capture('rustup', 'run', '1.100.0', 'rustc', '--print', 'sysroot'))
         rust_docs = sysroot / 'share/doc/rust'
         shutil.copytree(rust_docs / 'licenses', licenses / 'rust-toolchain/licenses')
         shutil.copy2(rust_docs / 'COPYRIGHT-library.html', licenses / 'rust-toolchain/COPYRIGHT-library.html')
@@ -111,7 +111,7 @@ def main():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, target, follow_symlinks=False)
         vendor = project / 'rust-vendor'
-        config = capture('cargo', '+1.99.1', 'vendor', '--locked', '--versioned-dirs', str(vendor))
+        config = capture('cargo', '+1.100.0', 'vendor', '--locked', '--versioned-dirs', str(vendor))
         config = config.replace(str(vendor), 'rust-vendor')
         (project / '.cargo').mkdir(exist_ok=True)
         # 既存の設定（PDFiumの環境変数）を残し、vendorの設定を追記する。

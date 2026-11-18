@@ -4,7 +4,7 @@
 
 以下のコマンドは `Cargo.toml` があるプロジェクトルートで実行する。ビルドに必要なシステムライブラリと導入例は [README](../README.md#ビルド環境) を参照する。追加のシステムパッケージが必要な場合は、理由と導入コマンドを利用者へ提案し、導入は利用者が行う。
 
-`Cargo.toml` の最小Rustバージョンは1.88、検証済み環境はRust 1.99.1、Nobara/Fedora系Linux。GPUIは0.2.2に固定し、依存は `Cargo.lock` に従う。開発ビルドも画像処理の速度を保つため最適化を有効にしている。表示にはWaylandまたはX11とVulkanが必要。
+検証済み環境はRust 1.100.0、Nobara/Fedora系Linux。`Cargo.toml` の `rust-version` もこの版（1.100）に合わせる。Nagameはライブラリーではないので、検証していない古いRustとの互換性は保たない。配布用のRustを更新するときは `rust-version` も上げ、CargoがMSRVを理由に依存の更新を止めないようにする。GPUIは0.2.2に固定し、依存は `Cargo.lock` に従う。開発ビルドも画像処理の速度を保つため最適化を有効にしている。表示にはWaylandまたはX11とVulkanが必要。
 
 ```sh
 cargo build --locked
@@ -13,13 +13,13 @@ cargo build --locked
 cargo run --locked --release -- /path/to/images
 ```
 
-PDFの表示とテストには、固定版のPDFiumが必要。`just pdfium`（`python3 tools/fetch_pdfium.py`）が [pdfium.json](../packaging/linux/pdfium.json) の版を取得し、SHA256を照合して `target/pdfium/` へ展開する。`gh` があれば出所の証明（attestation）も検証する。版を更新するときは `--require-attestation` で証明の検証を必須にする。`cargo run` と `cargo test` には [.cargo/config.toml](../.cargo/config.toml) が `NAGAME_PDFIUM_LIBRARY` を設定する。`./target/debug/nagame` を直接起動してPDFを開く場合は、同じ環境変数に `target/pdfium/chromium-8125/lib/libpdfium.so` の絶対パスを渡す。PDFiumは補助プロセス（`nagame --pdf-helper`）だけがロードする。設計は [PDF対応](pdf-support.md) を参照。
+PDFの表示とテストには、固定版のPDFiumが必要。`just pdfium`（`python3 tools/fetch_pdfium.py`）が [pdfium.json](../packaging/linux/pdfium.json) の版を取得し、SHA256を照合して `target/pdfium/` へ展開する。`gh` があれば出所の証明（attestation）も検証する。版を更新するときは `--require-attestation` で証明の検証を必須にする。`cargo run` と `cargo test` には [.cargo/config.toml](../.cargo/config.toml) が `NAGAME_PDFIUM_LIBRARY` を設定する。`./target/debug/nagame` を直接起動してPDFを開く場合は、同じ環境変数に `target/pdfium/chromium-8165/lib/libpdfium.so` の絶対パスを渡す。PDFiumは補助プロセス（`nagame --pdf-helper`）だけがロードする。設計は [PDF対応](pdf-support.md) を参照。
 
 ## 開発ツールと秘密情報の検査
 
-開発用CLIは [aqua](https://aquaproj.github.io/) で管理する。aquaが未導入の場合は [公式の導入手順](https://aquaproj.github.io/docs/install) に従い、`aqua` をPATHから実行できるようにする。この環境ではaqua 2.65.2で確認した。
+開発用CLIは [aqua](https://aquaproj.github.io/) で管理する。aquaが未導入の場合は [公式の導入手順](https://aquaproj.github.io/docs/install) に従い、`aqua` をPATHから実行できるようにする。この環境ではaqua 2.66.1で確認した。
 
-[aqua.yaml](../aqua.yaml) でレジストリと開発・配布ツールのバージョンを固定し、[aqua-checksums.json](../aqua-checksums.json) に配布物のチェックサムを記録している。現在のjustは1.59.0、betterleaksはv1.10.0、oxipngはv10.2.1、crossはv0.2.5。AppImage用ツールの版は [配布用ビルド](distribution.md) を参照。インストール時はチェックサム照合を必須とする。
+[aqua.yaml](../aqua.yaml) でレジストリと開発・配布ツールのバージョンを固定し、[aqua-checksums.json](../aqua-checksums.json) に配布物のチェックサムを記録している。現在のjustは1.59.0、betterleaksはv1.10.1、oxipngはv10.2.1、crossはv0.2.5。AppImage用ツールの版は [配布用ビルド](distribution.md) を参照。インストール時はチェックサム照合を必須とする。
 
 AppImage用の4ツールは標準レジストリにないため、[ローカルレジストリ](../packaging/linux/aqua-registry.yaml) を使う。初回は [aqua-policy.yaml](../aqua-policy.yaml) の許可対象を確認し、信頼登録してからインストールする。ポリシーを変更した場合は再確認・再登録する。全ポリシーの無効化は行わない。
 

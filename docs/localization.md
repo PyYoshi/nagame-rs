@@ -24,9 +24,9 @@ Fluent形式のメッセージを、`i18n-embed` と `i18n-embed-fl` で扱う�
 | i18n-embed + i18n-embed-fl | Fluent、英語へのフォールバック、スレッド共有可能なローダー、基準翻訳のキーと名前付き引数のコンパイル時照合 | 採用。ただし全引数を省略した場合などの検証の穴は下記のテストで補う |
 | gettext-rs | PO/MOの翻訳作業、文脈、複数形を扱う既存の仕組み | MOへの変換・配置とネイティブgettext連携が加わる。現在の単一バイナリ中心の配布にはFluentの埋め込みが合うため採用しない |
 
-rust-i18n 4.2.4を最初に依存解決した際は、間接依存のserde-saphyr 1.3.0がRust 1.89を要求した。3.1.5も比較したが、上記のキー・引数検証と複数形の要件からFluentを選んだ。rust-i18n全体がRust 1.88で使えない、という判断ではない。
+rust-i18n 4.2.4を最初に依存解決した際は、間接依存のserde-saphyr 1.3.0が、当時の `rust-version`（1.88）を超えるRust 1.89を要求した。3.1.5も比較したが、上記のキー・引数検証と複数形の要件からFluentを選んだ。rust-i18n全体がRust 1.88で使えない、という判断ではない。
 
-Fluent側は追加のネイティブライブラリを要求しない。`i18n-embed` は `fluent-system`・`rust-embed`・`desktop-requester` を有効にし、gettext・ファイル監視は有効にしていない。OSの主言語の取得はdesktop-requesterを使い、対応言語への対応付けはNagame側で行う。依存更新時はプロジェクトの `rust-version = "1.88"` との整合性を確認する。今回の実行検証は既存のRust 1.99.1環境であり、Rust 1.88そのものを使ったビルド試験ではない。
+Fluent側は追加のネイティブライブラリを要求しない。`i18n-embed` は `fluent-system`・`rust-embed`・`desktop-requester` を有効にし、gettext・ファイル監視は有効にしていない。OSの主言語の取得はdesktop-requesterを使い、対応言語への対応付けはNagame側で行う。最小Rust版の扱いは [開発・検証](development.md#開発環境) を参照する。
 
 ## 実装と実測で確認した範囲
 

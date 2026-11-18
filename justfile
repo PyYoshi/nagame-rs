@@ -31,13 +31,13 @@ release:
 dist-build:
     CARGO_TARGET_DIR=target/dist-linux-x86_64 \
         RUSTFLAGS="-C target-cpu=x86-64 --remap-path-prefix={{ justfile_directory() }}=." \
-        aqua -c aqua.yaml exec -- cross +1.99.1 build --locked --release --bin nagame --target x86_64-unknown-linux-gnu
+        aqua -c aqua.yaml exec -- cross +1.100.0 build --locked --release --bin nagame --target x86_64-unknown-linux-gnu
 
 # 配布用ビルド環境で単体テスト（PDFの描画テストは取得済みのPDFiumを使う）
 dist-test: pdfium
     CARGO_TARGET_DIR=target/dist-linux-x86_64 \
         RUSTFLAGS="-C target-cpu=x86-64 --remap-path-prefix={{ justfile_directory() }}=." \
-        aqua -c aqua.yaml exec -- cross +1.99.1 test --locked --target x86_64-unknown-linux-gnu
+        aqua -c aqua.yaml exec -- cross +1.100.0 test --locked --target x86_64-unknown-linux-gnu
 
 # AppImage・ソース・ライセンス・チェックサムを生成
 dist-appimage: dist-build secrets
@@ -49,7 +49,7 @@ dist-check-appimage: dist-appimage
     NAGAME_CODEC_FIXTURE_DIR="{{ justfile_directory() }}/target/dist/codec-fixtures" \
         CARGO_TARGET_DIR=target/dist-linux-x86_64 \
         RUSTFLAGS="-C target-cpu=x86-64 --remap-path-prefix={{ justfile_directory() }}=." \
-        aqua -c aqua.yaml exec -- cross +1.99.1 test --locked --bin nagame --target x86_64-unknown-linux-gnu avif_and_heic_decode_real_encoded_images
+        aqua -c aqua.yaml exec -- cross +1.100.0 test --locked --bin nagame --target x86_64-unknown-linux-gnu avif_and_heic_decode_real_encoded_images
     {{ CROSS_CONTAINER_ENGINE }} build --platform linux/amd64 -t localhost/nagame-smoke:ubuntu24.04 -f packaging/linux/Smoke.Containerfile packaging/linux
     {{ CROSS_CONTAINER_ENGINE }} run --rm --init --platform linux/amd64 -v "{{ justfile_directory() }}/target/dist/appimage:/artifacts:ro,z" -v "{{ justfile_directory() }}/target/dist/codec-fixtures:/fixtures:ro,z" -v "{{ justfile_directory() }}/tools:/checks:ro,z" localhost/nagame-smoke:ubuntu24.04 xvfb-run -a python3 /checks/check_appimage.py
 
